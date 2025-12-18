@@ -12,8 +12,34 @@ function App() {
   const [error, setError] = useState(null)
   const [dragActive, setDragActive] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [docxDownloading, setDocxDownloading] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
   const [showJobDescription, setShowJobDescription] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
+  const [pdfUrl, setPdfUrl] = useState(null)
+
+  // Derived helpers to support both old and new API schemas
+  const originalSummary = result?.summary || result?.objective || ''
+  const originalSkillsArray = Array.isArray(result?.skills)
+    ? result.skills
+    : (typeof result?.technical_skills === 'string'
+        ? result.technical_skills.split(',').map(s => s.trim()).filter(Boolean)
+        : [])
+  const originalExperienceArray = Array.isArray(result?.experience) ? result.experience : null
+  const originalExperienceText = !originalExperienceArray && typeof result?.experience === 'string' ? result.experience : ''
+  const originalEducationArray = Array.isArray(result?.education) ? result.education : null
+  const originalEducationText = !originalEducationArray && typeof result?.education === 'string' ? result.education : ''
+  const originalProjectsArray = Array.isArray(result?.projects) ? result.projects : null
+  const originalProjectsText = !originalProjectsArray && typeof result?.projects === 'string' ? result.projects : ''
+
+  const tailoredSummary = tailored?.tailored_summary || tailored?.tailored_objective || ''
+  const tailoredSkillsArray = Array.isArray(tailored?.target_skills)
+    ? tailored.target_skills
+    : (typeof tailored?.tailored_technical_skills === 'string'
+        ? tailored.tailored_technical_skills.split(',').map(s => s.trim()).filter(Boolean)
+        : [])
+  const tailoredExperienceArray = Array.isArray(tailored?.tailored_experience) ? tailored.tailored_experience : null
+  const tailoredExperienceText = !tailoredExperienceArray && typeof tailored?.tailored_experience === 'string' ? tailored.tailored_experience : ''
 
   // Handle file selection
   const handleFileChange = (e) => {
@@ -116,15 +142,20 @@ function App() {
 
   // Reset to upload new file
   const handleReset = () => {
+    if (pdfUrl) {
+      window.URL.revokeObjectURL(pdfUrl)
+      setPdfUrl(null)
+    }
     setFile(null)
     setResult(null)
     setTailored(null)
     setError(null)
     setShowOriginal(false)
     setShowJobDescription(false)
+    setShowPreview(false)
   }
 
-  const handleDownload = async () => {
+  const handlePreview = async () => {
     if (!result) return
     setDownloading(true)
     setError(null)
@@ -136,18 +167,58 @@ function App() {
 
       const blob = new Blob([response.data], { type: 'application/pdf' })
       const url = window.URL.createObjectURL(blob)
+      setPdfUrl(url)
+      setShowPreview(true)
+    } catch (err) {
+      console.error('Preview error:', err)
+      setError('Failed to generate preview. Please try again.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handleDownloadFromPreview = () => {
+    if (!pdfUrl) return
+    const link = document.createElement('a')
+    link.href = pdfUrl
+    link.setAttribute('download', 'tailored-resume.pdf')
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+
+  const handleClosePreview = () => {
+    if (pdfUrl) {
+      window.URL.revokeObjectURL(pdfUrl)
+      setPdfUrl(null)
+    }
+    setShowPreview(false)
+  }
+
+  const handleDownloadDocx = async () => {
+    if (!result) return
+    setDocxDownloading(true)
+    setError(null)
+    try {
+      const payload = { parsed: result, tailored: tailored || null }
+      const response = await axios.post('http://localhost:5000/api/export-docx', payload, {
+        responseType: 'blob',
+      })
+
+      const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+      const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.setAttribute('download', 'tailored-resume.pdf')
+      link.setAttribute('download', 'tailored-resume.docx')
       document.body.appendChild(link)
       link.click()
       link.remove()
       window.URL.revokeObjectURL(url)
     } catch (err) {
-      console.error('Download error:', err)
-      setError('Failed to download PDF. Please try again.')
+      console.error('DOCX download error:', err)
+      setError('Failed to download DOCX. Please try again.')
     } finally {
-      setDownloading(false)
+      setDocxDownloading(false)
     }
   }
 
@@ -227,8 +298,11 @@ function App() {
             <div className="results-header">
               <h2>✓ Tailored Resume Ready</h2>
               <div style={{ display: 'flex', gap: '0.75rem' }}>
-                <button onClick={handleDownload} className="btn-primary" disabled={downloading}>
-                  {downloading ? 'Preparing PDF...' : 'Download PDF'}
+                <button onClick={handlePreview} className="btn-primary" disabled={downloading}>
+                  {downloading ? 'Preparing PDF...' : 'Preview PDF'}
+                </button>
+                <button onClick={handleDownloadDocx} className="btn-secondary" disabled={docxDownloading}>
+                  {docxDownloading ? 'Preparing DOCX...' : 'Download DOCX'}
                 </button>
                 <button onClick={() => setShowJobDescription(!showJobDescription)} className="btn-secondary">
                   {showJobDescription ? 'Hide Job Description' : 'Show Job Description'}
@@ -256,24 +330,24 @@ function App() {
                   <>
                     <div className="result-card full-width">
                       <h3>Tailored Summary</h3>
-                      <p>{tailored.tailored_summary || 'Not available'}</p>
+                      <p>{tailoredSummary || 'Not available'}</p>
                     </div>
 
-                    {tailored.target_skills && tailored.target_skills.length > 0 && (
+                    {tailoredSkillsArray && tailoredSkillsArray.length > 0 && (
                       <div className="result-card">
                         <h3>Target Skills</h3>
                         <div className="skills-container">
-                          {tailored.target_skills.map((skill, index) => (
+                          {tailoredSkillsArray.map((skill, index) => (
                             <span key={index} className="skill-tag">{skill}</span>
                           ))}
                         </div>
                       </div>
                     )}
 
-                    {tailored.tailored_experience && tailored.tailored_experience.length > 0 && (
+                    {tailoredExperienceArray && tailoredExperienceArray.length > 0 && (
                       <div className="result-card full-width">
                         <h3>Tailored Experience</h3>
-                        {tailored.tailored_experience.map((exp, index) => (
+                        {tailoredExperienceArray.map((exp, index) => (
                           <div key={index} className="experience-item">
                             <h4>{exp.role} at {exp.company}</h4>
                             <p className="dates">{exp.dates}</p>
@@ -286,6 +360,13 @@ function App() {
                             )}
                           </div>
                         ))}
+                      </div>
+                    )}
+
+                    {!tailoredExperienceArray && tailoredExperienceText && (
+                      <div className="result-card full-width">
+                        <h3>Tailored Experience</h3>
+                        <p>{tailoredExperienceText}</p>
                       </div>
                     )}
                   </>
@@ -317,18 +398,18 @@ function App() {
               </div>
 
               {/* Summary */}
-              {result.summary && (
+              {originalSummary && (
                 <div className="result-card full-width">
                   <h3>Professional Summary</h3>
-                  <p>{result.summary}</p>
+                  <p>{originalSummary}</p>
                 </div>
               )}
 
               {/* Experience */}
-              {result.experience && result.experience.length > 0 && (
+              {originalExperienceArray && originalExperienceArray.length > 0 && (
                 <div className="result-card full-width">
                   <h3>Work Experience</h3>
-                  {result.experience.map((exp, index) => (
+                  {originalExperienceArray.map((exp, index) => (
                     <div key={index} className="experience-item">
                       <h4>{exp.title} at {exp.company}</h4>
                       <p className="dates">{exp.dates}</p>
@@ -338,11 +419,18 @@ function App() {
                 </div>
               )}
 
+              {!originalExperienceArray && originalExperienceText && (
+                <div className="result-card full-width">
+                  <h3>Work Experience</h3>
+                  <p className="description">{originalExperienceText}</p>
+                </div>
+              )}
+
               {/* Education */}
-              {result.education && result.education.length > 0 && (
+              {originalEducationArray && originalEducationArray.length > 0 && (
                 <div className="result-card">
                   <h3>Education</h3>
-                  {result.education.map((edu, index) => (
+                  {originalEducationArray.map((edu, index) => (
                     <div key={index} className="education-item">
                       <h4>{edu.degree} in {edu.field}</h4>
                       <p>{edu.school}</p>
@@ -352,12 +440,19 @@ function App() {
                 </div>
               )}
 
+              {!originalEducationArray && originalEducationText && (
+                <div className="result-card">
+                  <h3>Education</h3>
+                  <p>{originalEducationText}</p>
+                </div>
+              )}
+
               {/* Skills */}
-              {result.skills && result.skills.length > 0 && (
+              {originalSkillsArray && originalSkillsArray.length > 0 && (
                 <div className="result-card">
                   <h3>Skills</h3>
                   <div className="skills-container">
-                    {result.skills.map((skill, index) => (
+                    {originalSkillsArray.map((skill, index) => (
                       <span key={index} className="skill-tag">
                         {skill}
                       </span>
@@ -365,9 +460,54 @@ function App() {
                   </div>
                 </div>
               )}
+
+              {/* Academic Projects */}
+              {originalProjectsArray && originalProjectsArray.length > 0 && (
+                <div className="result-card full-width">
+                  <h3>Academic Projects</h3>
+                  {originalProjectsArray.map((p, index) => (
+                    <div key={index} className="project-item">
+                      <h4>{[p.name, p.organization].filter(Boolean).join(' — ')}</h4>
+                      {p.dates && <p className="dates">{p.dates}</p>}
+                      {p.description && <p className="description">{p.description}</p>}
+                      {Array.isArray(p.technologies) && p.technologies.length > 0 && (
+                        <p className="technologies">Technologies: {p.technologies.join(', ')}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!originalProjectsArray && originalProjectsText && (
+                <div className="result-card full-width">
+                  <h3>Academic Projects</h3>
+                  <p>{originalProjectsText}</p>
+                </div>
+              )}
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {showPreview && pdfUrl && (
+          <div className="modal-overlay" onClick={handleClosePreview}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Resume Preview</h2>
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <button onClick={handleDownloadFromPreview} className="btn-primary">
+                    Download PDF
+                  </button>
+                  <button onClick={handleClosePreview} className="btn-secondary">
+                    Close
+                  </button>
+                </div>
+              </div>
+              <div className="modal-body">
+                <iframe src={pdfUrl} title="Resume Preview" className="pdf-preview" />
+              </div>
             </div>
           </div>
         )}

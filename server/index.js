@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
 const pdf = require('pdf-parse');
 const PDFDocument = require('pdfkit');
 const mammoth = require('mammoth');
@@ -115,6 +116,15 @@ Return a JSON object with this exact structure:
       "dates": "Graduation date or date range"
     }
   ],
+  "projects": [
+    {
+      "name": "Project title",
+      "organization": "Institution/Company (if applicable)",
+      "dates": "Project dates",
+      "description": "Brief description of the project",
+      "technologies": ["tech1", "tech2"]
+    }
+  ],
   "skills": ["skill1", "skill2", "skill3"]
 }`;
 
@@ -183,6 +193,52 @@ Rules:
   }
 }
 
+
+function toPlainText(value, type = 'generic') {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    if (type === 'skills') {
+      const flat = value.filter(Boolean).map(v => (typeof v === 'string' ? v : '')).filter(Boolean);
+      return flat.join(', ');
+    }
+    if (type === 'experience') {
+      return value.map((exp) => {
+        if (!exp || typeof exp !== 'object') return '';
+        const title = exp.role || exp.title || '';
+        const company = exp.company || '';
+        const heading = [title, company].filter(Boolean).join(' at ');
+        const dates = exp.dates ? `\n${exp.dates}` : '';
+        const desc = exp.description ? `\n${exp.description}` : '';
+        const bullets = Array.isArray(exp.bullets) && exp.bullets.length > 0
+          ? `\n${exp.bullets.map(b => `- ${b}`).join('\n')}`
+          : '';
+        return [heading, dates, desc, bullets].filter(Boolean).join('');
+      }).filter(Boolean).join('\n\n');
+    }
+    if (type === 'education') {
+      return value.map((edu) => {
+        if (!edu || typeof edu !== 'object') return '';
+        const degreeField = [edu.degree, edu.field].filter(Boolean).join(' in ');
+        const school = edu.school || '';
+        const dates = edu.dates || '';
+        return [degreeField, school, dates].filter(Boolean).join('\n');
+      }).filter(Boolean).join('\n\n');
+    }
+    // generic array of strings
+    return value.map(v => (typeof v === 'string' ? v : '')).filter(Boolean).join('\n');
+  }
+  if (typeof value === 'object') {
+    // Fallback: stringify key facts line-by-line
+    try {
+      return Object.values(value).map(v => (typeof v === 'string' ? v : '')).filter(Boolean).join('\n');
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 function addSectionTitle(doc, text) {
   doc.moveDown(0.6);
   doc.font('Helvetica-Bold').fontSize(14).fillColor('#111').text(text);
@@ -215,6 +271,24 @@ function buildResumePdf(doc, parsed = {}, tailored = null) {
     doc.font('Helvetica').fontSize(11).fillColor('#222').text(skills.join(', '), { lineGap: 2 });
   }
 
+  // Render Education before Experience
+  if (parsed.education && Array.isArray(parsed.education) && parsed.education.length > 0) {
+    addSectionTitle(doc, 'Education');
+    parsed.education.forEach((edu) => {
+      const heading = [edu.degree, edu.field].filter(Boolean).join(' in ');
+      if (heading) {
+        doc.font('Helvetica-Bold').fontSize(12).fillColor('#111').text(heading);
+      }
+      if (edu.school) {
+        doc.font('Helvetica').fontSize(11).fillColor('#222').text(edu.school);
+      }
+      if (edu.dates) {
+        doc.font('Helvetica').fontSize(10).fillColor('#666').text(edu.dates);
+      }
+      doc.moveDown(0.5);
+    });
+  }
+
   const expList = (tailored?.tailored_experience && tailored.tailored_experience.length > 0)
     ? tailored.tailored_experience
     : parsed.experience || [];
@@ -243,22 +317,138 @@ function buildResumePdf(doc, parsed = {}, tailored = null) {
     });
   }
 
+  // Projects
+  const projects = parsed.projects;
+  if (projects) {
+    addSectionTitle(doc, 'Projects');
+    if (Array.isArray(projects)) {
+      projects.forEach((p) => {
+        if (!p || typeof p !== 'object') return;
+        const name = p.name || '';
+        const org = p.organization || '';
+        const heading = [name, org].filter(Boolean).join(' — ');
+        if (heading) {
+          doc.font('Helvetica-Bold').fontSize(12).fillColor('#111').text(heading);
+        }
+        if (p.dates) {
+          doc.font('Helvetica').fontSize(10).fillColor('#666').text(p.dates);
+        }
+        if (p.description) {
+          doc.font('Helvetica').fontSize(11).fillColor('#222').text(p.description, { lineGap: 2 });
+        }
+        if (Array.isArray(p.technologies) && p.technologies.length > 0) {
+          doc.moveDown(0.15);
+          doc.font('Helvetica').fontSize(11).fillColor('#222').text(`Technologies: ${p.technologies.join(', ')}`, { lineGap: 1.5 });
+        }
+        doc.moveDown(0.5);
+      });
+    } else if (typeof projects === 'string') {
+      doc.font('Helvetica').fontSize(11).fillColor('#222').text(projects, { lineGap: 2 });
+    }
+  }
+}
+
+// Build DOCX resume
+async function buildResumeDocx(parsed = {}, tailored = null) {
+  const children = [];
+
+  const name = parsed.name || 'Resume';
+  const contact = [parsed.email, parsed.phone, parsed.location].filter(Boolean).join(' · ');
+
+  const addHeading = (text) => {
+    children.push(new Paragraph({ text, heading: HeadingLevel.HEADING_2, spacing: { before: 200, after: 120 } }));
+  };
+
+  const addBullet = (text, level = 0) => {
+    if (!text) return;
+    children.push(new Paragraph({ text, bullet: { level }, spacing: { after: 80 } }));
+  };
+
+  const addText = (text, spacingAfter = 120, indent = 0) => {
+    if (!text) return;
+    children.push(new Paragraph({ text, spacing: { after: spacingAfter }, indent: { left: indent } }));
+  };
+
+  // Header
+  children.push(new Paragraph({ text: name, heading: HeadingLevel.TITLE, spacing: { after: 140 } }));
+  if (contact) {
+    children.push(new Paragraph({ text: contact, spacing: { after: 220 } }));
+  }
+
+  // Summary
+  const summary = tailored?.tailored_summary || parsed.summary;
+  if (summary) {
+    addHeading('Summary');
+    addText(summary, 140);
+  }
+
+  // Skills
+  const skills = (tailored?.target_skills && tailored.target_skills.length > 0) ? tailored.target_skills : parsed.skills || [];
+  if (skills && skills.length > 0) {
+    addHeading('Skills');
+    addText(Array.isArray(skills) ? skills.join(', ') : skills, 140);
+  }
+
+  // Education first
   if (parsed.education && Array.isArray(parsed.education) && parsed.education.length > 0) {
-    addSectionTitle(doc, 'Education');
+    addHeading('Education');
     parsed.education.forEach((edu) => {
+      if (!edu || typeof edu !== 'object') return;
       const heading = [edu.degree, edu.field].filter(Boolean).join(' in ');
-      if (heading) {
-        doc.font('Helvetica-Bold').fontSize(12).fillColor('#111').text(heading);
+      const line = heading || edu.school || '';
+      const dates = edu.dates ? ` (${edu.dates})` : '';
+      addBullet(`${line}${dates}`.trim(), 0);
+      if (edu.school && edu.school !== line) {
+        addText(edu.school, 100, 360);
       }
-      if (edu.school) {
-        doc.font('Helvetica').fontSize(11).fillColor('#222').text(edu.school);
-      }
-      if (edu.dates) {
-        doc.font('Helvetica').fontSize(10).fillColor('#666').text(edu.dates);
-      }
-      doc.moveDown(0.5);
     });
   }
+
+  // Experience
+  const expList = (tailored?.tailored_experience && tailored.tailored_experience.length > 0)
+    ? tailored.tailored_experience
+    : parsed.experience || [];
+  if (Array.isArray(expList) && expList.length > 0) {
+    addHeading('Experience');
+    expList.forEach((exp) => {
+      if (!exp || typeof exp !== 'object') return;
+      const title = exp.role || exp.title || '';
+      const company = exp.company || '';
+      const heading = [title, company].filter(Boolean).join(' at ');
+      const dates = exp.dates ? ` (${exp.dates})` : '';
+      addBullet(`${heading}${dates}`.trim(), 0);
+      if (exp.description) addText(exp.description, 100, 360);
+      if (Array.isArray(exp.bullets) && exp.bullets.length > 0) {
+        exp.bullets.forEach((b) => addBullet(b, 1));
+      }
+    });
+  }
+
+  // Projects
+  const projects = parsed.projects;
+  if (projects) {
+    addHeading('Projects');
+    if (Array.isArray(projects)) {
+      projects.forEach((p) => {
+        if (!p || typeof p !== 'object') return;
+        const heading = [p.name, p.organization].filter(Boolean).join(' — ');
+        const dates = p.dates ? ` (${p.dates})` : '';
+        addBullet(`${heading}${dates}`.trim(), 0);
+        if (p.description) addText(p.description, 100, 360);
+        if (Array.isArray(p.technologies) && p.technologies.length > 0) {
+          addText(`Technologies: ${p.technologies.join(', ')}`, 100, 360);
+        }
+      });
+    } else if (typeof projects === 'string') {
+      addText(projects, 140);
+    }
+  }
+
+  const doc = new Document({
+    sections: [{ children }],
+  });
+
+  return Packer.toBuffer(doc);
 }
 
 // Upload and parse endpoint
@@ -300,11 +490,38 @@ app.post('/api/upload', upload.single('resume'), async (req, res) => {
       fs.unlinkSync(filePath);
     }
 
-    // Return the parsed data
+    // Normalize the parsed data to a stable schema to protect the UI
+    const normalizedParsed = {
+      name: parsedResume?.name || '',
+      email: parsedResume?.email || '',
+      phone: parsedResume?.phone || '',
+      location: parsedResume?.location || '',
+      objective: parsedResume?.objective || parsedResume?.summary || '',
+      technical_skills: Array.isArray(parsedResume?.skills)
+        ? parsedResume.skills.join(', ')
+        : (parsedResume?.technical_skills || ''),
+      // Preserve arrays if present; otherwise keep as string (or empty)
+      education: Array.isArray(parsedResume?.education)
+        ? parsedResume.education
+        : (typeof parsedResume?.education === 'string' ? parsedResume.education : ''),
+      experience: Array.isArray(parsedResume?.experience)
+        ? parsedResume.experience
+        : (typeof parsedResume?.experience === 'string' ? parsedResume.experience : ''),
+      projects: Array.isArray(parsedResume?.projects)
+        ? parsedResume.projects
+        : (typeof parsedResume?.projects === 'string' ? parsedResume.projects : ''),
+      // Provide an array form as well for components that expect it
+      skills: Array.isArray(parsedResume?.skills)
+        ? parsedResume.skills
+        : (typeof parsedResume?.technical_skills === 'string'
+            ? parsedResume.technical_skills.split(',').map(s => s.trim()).filter(Boolean)
+            : [])
+    };
+
     res.json({
       success: true,
-      data: parsedResume,
-      tailored: tailoredResume
+      data: normalizedParsed,
+      tailored: tailoredResume || null
     });
 
   } catch (error) {
@@ -342,6 +559,26 @@ app.post('/api/export-pdf', async (req, res) => {
   } catch (error) {
     console.error('Error exporting PDF:', error);
     res.status(500).json({ success: false, error: 'Failed to generate PDF.' });
+  }
+});
+
+app.post('/api/export-docx', async (req, res) => {
+  try {
+    const parsed = req.body?.parsed;
+    const tailored = req.body?.tailored || null;
+
+    if (!parsed || typeof parsed !== 'object') {
+      return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
+    }
+
+    const buffer = await buildResumeDocx(parsed, tailored);
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', 'attachment; filename="resume.docx"');
+    res.send(buffer);
+  } catch (error) {
+    console.error('Error exporting DOCX:', error);
+    res.status(500).json({ success: false, error: 'Failed to generate DOCX.' });
   }
 });
 
