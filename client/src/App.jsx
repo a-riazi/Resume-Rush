@@ -2,14 +2,84 @@ import { useState } from 'react'
 import axios from 'axios'
 import './App.css'
 
+const templateOptions = [
+  { key: 'classic', label: 'Classic', accent: '#111', heading: '#111', body: '#222', bg: '#f4f2ec' },
+  { key: 'modern', label: 'Modern Accent', accent: '#0f766e', heading: '#0b4f4a', body: '#1f1b16', bg: '#e8f5f3' },
+  { key: 'minimal', label: 'Minimal', accent: '#dddddd', heading: '#333333', body: '#111111', bg: '#f8f8f8' },
+  { key: 'midnight', label: 'Midnight', accent: '#1f4b99', heading: '#12326f', body: '#0e172a', bg: '#eef2fb' },
+  { key: 'sunrise', label: 'Sunrise', accent: '#f97316', heading: '#9a3412', body: '#4a2b16', bg: '#fff3e6' },
+  { key: 'mint', label: 'Mint', accent: '#2dd4bf', heading: '#115e59', body: '#064e3b', bg: '#e6fffa' },
+  { key: 'sidebar', label: 'Sidebar', accent: '#1e40af', heading: '#1e40af', body: '#1a1a1a', bg: '#dbeafe' },
+  { key: 'executive', label: 'Executive', accent: '#d97706', heading: '#d97706', body: '#1a1a1a', bg: '#fef3c7' },
+  { key: 'clean', label: 'Clean Modern', accent: '#7c3aed', heading: '#7c3aed', body: '#374151', bg: '#f3e8ff' },
+  { key: 'bold', label: 'Bold Impact', accent: '#dc2626', heading: '#dc2626', body: '#1a1a1a', bg: '#fee2e2' },
+  { key: 'creative', label: 'Creative', accent: '#059669', heading: '#059669', body: '#1f2937', bg: '#d1fae5' },
+  { key: 'centered_serif', label: 'Centered Serif', accent: '#374151', heading: '#374151', body: '#1f2937', bg: '#eef2f7' },
+  { key: 'compact_pro', label: 'Compact Professional', accent: '#4b5563', heading: '#1f2937', body: '#111827', bg: '#f6f7f9' },
+  { key: 'left_bar', label: 'Left Bar', accent: '#374151', heading: '#1f2937', body: '#111827', bg: '#eef1f4' },
+]
+
+const sampleParsed = {
+  name: 'Jordan Lee',
+  email: 'jordan.lee@example.com',
+  phone: '(555) 123-4567',
+  location: 'San Francisco, CA',
+  summary: 'Product-focused software engineer with 6+ years building web platforms, leading feature delivery, and collaborating across design, product, and data teams.',
+  skills: ['JavaScript', 'TypeScript', 'React', 'Node.js', 'GraphQL', 'PostgreSQL', 'AWS', 'Docker'],
+  education: [
+    {
+      school: 'University of Washington',
+      degree: 'B.S.',
+      field: 'Computer Science',
+      dates: '2014 – 2018',
+    },
+  ],
+  experience: [
+    {
+      company: 'Nimbus Labs',
+      title: 'Senior Software Engineer',
+      role: 'Senior Software Engineer',
+      dates: '2021 – Present',
+      description: 'Lead engineer for growth experiments and self-serve onboarding.',
+      bullets: [
+        'Shipped experimentation platform (React/Node/GraphQL) improving activation by 12%.',
+        'Reduced page load by 28% via code-splitting, bundle analysis, and image optimization.',
+        'Mentored 4 engineers; established review guidelines that cut PR cycle time by 18%.',
+      ],
+    },
+    {
+      company: 'Brightside',
+      title: 'Software Engineer',
+      role: 'Software Engineer',
+      dates: '2018 – 2021',
+      description: 'Built customer-facing features and internal tooling for support ops.',
+      bullets: [
+        'Implemented real-time chat tooling using WebSockets, reducing support response SLA by 22%.',
+        'Co-owned design system components; improved accessibility (WCAG AA) across core flows.',
+      ],
+    },
+  ],
+  projects: [
+    {
+      name: 'Release Radar',
+      organization: 'Personal',
+      dates: '2024',
+      description: 'Launch notifications tool aggregating changelogs across services with weekly digest.',
+      technologies: ['Next.js', 'Prisma', 'PostgreSQL', 'Tailwind'],
+    },
+  ],
+}
+
 function App() {
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [tailored, setTailored] = useState(null)
+  const [coverLetter, setCoverLetter] = useState(null)
   const [jobText, setJobText] = useState('')
   const [jobUsed, setJobUsed] = useState('')
   const [error, setError] = useState(null)
+  const [activePreviewTab, setActivePreviewTab] = useState('resume')
   const [dragActive, setDragActive] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [docxDownloading, setDocxDownloading] = useState(false)
@@ -17,6 +87,11 @@ function App() {
   const [showJobDescription, setShowJobDescription] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
   const [pdfUrl, setPdfUrl] = useState(null)
+  const [coverPdfUrl, setCoverPdfUrl] = useState(null)
+  const [templateKey, setTemplateKey] = useState('classic')
+  const [previewLabel, setPreviewLabel] = useState('')
+  const [proofreading, setProofreading] = useState(false)
+  const [proofreadResults, setProofreadResults] = useState(null)
 
   // Derived helpers to support both old and new API schemas
   const originalSummary = result?.summary || result?.objective || ''
@@ -124,6 +199,8 @@ function App() {
       if (response.data.success) {
         setResult(response.data.data)
         setTailored(response.data.tailored || null)
+        setCoverLetter(response.data.coverLetter || null)
+        // Keep the user's selected template instead of overwriting with recommendation
         if (jobText.trim().length > 0) {
           setJobUsed(jobText.trim())
         } else {
@@ -146,21 +223,30 @@ function App() {
       window.URL.revokeObjectURL(pdfUrl)
       setPdfUrl(null)
     }
+    if (coverPdfUrl) {
+      window.URL.revokeObjectURL(coverPdfUrl)
+      setCoverPdfUrl(null)
+    }
     setFile(null)
     setResult(null)
     setTailored(null)
+    setCoverLetter(null)
     setError(null)
     setShowOriginal(false)
     setShowJobDescription(false)
     setShowPreview(false)
+    setTemplateKey('classic')
+    setActivePreviewTab('resume')
   }
 
-  const handlePreview = async () => {
+  const handlePreviewResume = async () => {
     if (!result) return
     setDownloading(true)
     setError(null)
+    setPreviewLabel('Your tailored resume')
+    setActivePreviewTab('resume')
     try {
-      const payload = { parsed: result, tailored: tailored || null }
+      const payload = { parsed: result, tailored: tailored || null, templateKey }
       const response = await axios.post('http://localhost:5000/api/export-pdf', payload, {
         responseType: 'blob',
       })
@@ -171,7 +257,58 @@ function App() {
       setShowPreview(true)
     } catch (err) {
       console.error('Preview error:', err)
-      setError('Failed to generate preview. Please try again.')
+      setError('Failed to generate resume preview. Please try again.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handlePreviewCover = async () => {
+    if (!result || !coverLetter) return
+    setDownloading(true)
+    setError(null)
+    setPreviewLabel('Your cover letter')
+    setActivePreviewTab('cover')
+    try {
+      const coverPayload = { 
+        parsed: result, 
+        templateKey,
+        cover: {
+          body: coverLetter,
+        }
+      }
+      const coverResponse = await axios.post('http://localhost:5000/api/export-pdf-cover', coverPayload, {
+        responseType: 'blob',
+      })
+      const coverBlob = new Blob([coverResponse.data], { type: 'application/pdf' })
+      const coverUrl = window.URL.createObjectURL(coverBlob)
+      setCoverPdfUrl(coverUrl)
+      setShowPreview(true)
+    } catch (err) {
+      console.error('Cover preview error:', err)
+      setError('Failed to generate cover letter preview. Please try again.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handleSamplePreview = async (key) => {
+    setDownloading(true)
+    setError(null)
+    setPreviewLabel(`Sample · ${templateOptions.find((t) => t.key === key)?.label || key}`)
+    try {
+      const payload = { parsed: sampleParsed, tailored: null, templateKey: key }
+      const response = await axios.post('http://localhost:5000/api/export-pdf', payload, {
+        responseType: 'blob',
+      })
+
+      const blob = new Blob([response.data], { type: 'application/pdf' })
+      const url = window.URL.createObjectURL(blob)
+      setPdfUrl(url)
+      setShowPreview(true)
+    } catch (err) {
+      console.error('Sample preview error:', err)
+      setError('Failed to generate sample preview. Please try again.')
     } finally {
       setDownloading(false)
     }
@@ -181,7 +318,7 @@ function App() {
     if (!pdfUrl) return
     const link = document.createElement('a')
     link.href = pdfUrl
-    link.setAttribute('download', 'tailored-resume.pdf')
+    link.setAttribute('download', 'resume-preview.pdf')
     document.body.appendChild(link)
     link.click()
     link.remove()
@@ -192,15 +329,19 @@ function App() {
       window.URL.revokeObjectURL(pdfUrl)
       setPdfUrl(null)
     }
+    if (coverPdfUrl) {
+      window.URL.revokeObjectURL(coverPdfUrl)
+      setCoverPdfUrl(null)
+    }
     setShowPreview(false)
   }
 
-  const handleDownloadDocx = async () => {
+  const handleDownloadResumeDocx = async () => {
     if (!result) return
     setDocxDownloading(true)
     setError(null)
     try {
-      const payload = { parsed: result, tailored: tailored || null }
+      const payload = { parsed: result, tailored: tailored || null, templateKey }
       const response = await axios.post('http://localhost:5000/api/export-docx', payload, {
         responseType: 'blob',
       })
@@ -209,16 +350,101 @@ function App() {
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.setAttribute('download', 'tailored-resume.docx')
+      link.setAttribute('download', 'resume.docx')
       document.body.appendChild(link)
       link.click()
       link.remove()
       window.URL.revokeObjectURL(url)
     } catch (err) {
       console.error('DOCX download error:', err)
-      setError('Failed to download DOCX. Please try again.')
+      setError('Failed to download resume DOCX. Please try again.')
     } finally {
       setDocxDownloading(false)
+    }
+  }
+
+  const handleDownloadCoverDocx = async () => {
+    if (!result || !coverLetter) return
+    setDocxDownloading(true)
+    setError(null)
+    try {
+      const coverPayload = { 
+        parsed: result, 
+        templateKey,
+        cover: {
+          body: coverLetter,
+        }
+      }
+      const response = await axios.post('http://localhost:5000/api/export-docx-cover', coverPayload, {
+        responseType: 'blob',
+      })
+
+      const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.setAttribute('download', 'cover-letter.docx')
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Cover DOCX download error:', err)
+      setError('Failed to download cover letter DOCX. Please try again.')
+    } finally {
+      setDocxDownloading(false)
+    }
+  }
+
+  const handleProofread = async () => {
+    if (!result) return
+    setProofreading(true)
+    setError(null)
+    setProofreadResults(null)
+    
+    try {
+      const results = { resume: null, coverLetter: null }
+      
+      // Proofread resume summary and experience
+      if (tailored?.tailored_summary) {
+        const resumeContent = `
+SUMMARY:
+${tailored.tailored_summary}
+
+EXPERIENCE:
+${tailored.tailored_experience?.map(exp => 
+  `${exp.role} at ${exp.company}\n${exp.bullets?.join('\n') || ''}`
+).join('\n\n') || ''}
+`;
+        
+        const resumeResponse = await axios.post('http://localhost:5000/api/proofread', {
+          content: resumeContent,
+          contentType: 'resume'
+        })
+        
+        if (resumeResponse.data.success) {
+          results.resume = resumeResponse.data.result
+        }
+      }
+      
+      // Proofread cover letter
+      if (coverLetter) {
+        const coverResponse = await axios.post('http://localhost:5000/api/proofread', {
+          content: coverLetter,
+          contentType: 'cover letter'
+        })
+        
+        if (coverResponse.data.success) {
+          results.coverLetter = coverResponse.data.result
+        }
+      }
+      
+      setProofreadResults(results)
+    } catch (err) {
+      console.error('Proofread error:', err)
+      setError('Failed to proofread. Please try again.')
+    } finally {
+      setProofreading(false)
     }
   }
 
@@ -229,9 +455,20 @@ function App() {
         <p>AI-Powered Resume Tailor</p>
       </header>
 
-      <div className="container">
-        {!result ? (
-          <div className="upload-section">
+          <div className="container">
+            {!result ? (
+              <>
+                <div className="pre-tailor-bar" style={{ display: file ? 'flex' : 'none' }}>
+                  <div className="pre-tailor-info">
+                    <span className="pre-tailor-label">Ready to tailor</span>
+                    {file && <span className="pre-tailor-file">{file.name}</span>}
+                  </div>
+                  <button onClick={handleUpload} disabled={loading || !jobText.trim()} className="btn-primary">
+                    {loading ? 'Tailoring...' : 'Tailor Resume'}
+                  </button>
+                </div>
+
+                <div className="upload-section">
             <div
               className={`upload-area ${dragActive ? 'drag-active' : ''}`}
               onDragEnter={handleDrag}
@@ -270,39 +507,96 @@ function App() {
               <p className="job-helper">Provide the job description to get a perfectly tailored resume.</p>
             </div>
 
-            {file && (
-              <div className="file-info">
-                <p>✓ Selected: <strong>{file.name}</strong></p>
-                <button onClick={handleUpload} disabled={loading || !jobText.trim()} className="btn-primary">
-                  {loading ? 'Tailoring...' : 'Tailor Resume'}
-                </button>
-              </div>
-            )}
+                <div className="template-select-block">
+                  <h3 style={{ color: '#1f1b16', marginBottom: '0', fontSize: '1.4rem', fontWeight: 700 }}>Choose a Style:</h3>
+                  <div className="template-select-block">
 
-            {loading && (
-              <div className="loading">
-                <div className="spinner"></div>
-                <p>Creating your tailored resume...</p>
-              </div>
-            )}
+                    <div className="template-samples" style={{ marginTop: '-0.3rem' }}>
+                        {templateOptions.map((opt) => (
+                          <div
+                            key={opt.key}
+                          className={`template-sample-card ${templateKey === opt.key ? 'selected' : ''}`}
+                          style={{
+                            background: opt.bg,
+                            borderColor: opt.accent,
+                          }}
+                          onClick={() => setTemplateKey(opt.key)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              setTemplateKey(opt.key)
+                            }
+                            }}
+                          >
+                          <div className="template-sample-pill" style={{ background: opt.accent, color: opt.bg }}>{opt.label}</div>
+                            <button
+                              className="btn-secondary sample-btn"
+                              type="button"
+                              onClick={() => handleSamplePreview(opt.key)}
+                              disabled={downloading}
+                            >
+                              Preview sample
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
 
-            {error && (
-              <div className="error-message">
-                <span>⚠️</span>
-                <p>{error}</p>
-              </div>
-            )}
-          </div>
-        ) : (
+                  {loading && (
+                    <div className="loading">
+                      <div className="spinner"></div>
+                      <p>Creating your tailored resume...</p>
+                    </div>
+                  )}
+
+                  {error && (
+                    <div className="error-message">
+                      <span>⚠️</span>
+                      <p>{error}</p>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
           <div className="results-section">
             <div className="results-header">
               <h2>✓ Tailored Resume Ready</h2>
-              <div style={{ display: 'flex', gap: '0.75rem' }}>
-                <button onClick={handlePreview} className="btn-primary" disabled={downloading}>
-                  {downloading ? 'Preparing PDF...' : 'Preview PDF'}
+              <div className="results-actions">
+                <div className="template-picker">
+                  <label htmlFor="template-select">Template</label>
+                  <select
+                    id="template-select"
+                    value={templateKey}
+                    onChange={(e) => setTemplateKey(e.target.value)}
+                  >
+                    {templateOptions.map((opt) => (
+                      <option key={opt.key} value={opt.key}>{opt.label}</option>
+                    ))}
+                  </select>
+                  {tailored?.recommended_template && (
+                    <span className="recommended-pill">Suggested: {tailored.recommended_template}</span>
+                  )}
+                </div>
+                <button onClick={() => handlePreviewResume()} className="btn-primary" disabled={downloading}>
+                  {downloading ? 'Preparing...' : 'Preview Resume PDF'}
                 </button>
-                <button onClick={handleDownloadDocx} className="btn-secondary" disabled={docxDownloading}>
-                  {docxDownloading ? 'Preparing DOCX...' : 'Download DOCX'}
+                {coverLetter && (
+                  <button onClick={() => handlePreviewCover()} className="btn-primary" disabled={downloading}>
+                    {downloading ? 'Preparing...' : 'Preview Cover Letter PDF'}
+                  </button>
+                )}
+                <button onClick={handleDownloadResumeDocx} className="btn-secondary" disabled={docxDownloading}>
+                  {docxDownloading ? 'Preparing...' : 'Download Resume DOCX'}
+                </button>
+                {coverLetter && (
+                  <button onClick={handleDownloadCoverDocx} className="btn-secondary" disabled={docxDownloading}>
+                    {docxDownloading ? 'Preparing...' : 'Download Cover Letter DOCX'}
+                  </button>
+                )}
+                <button onClick={handleProofread} className="btn-secondary" disabled={proofreading}>
+                  {proofreading ? 'Proofreading...' : '🔍 Proofread'}
                 </button>
                 <button onClick={() => setShowJobDescription(!showJobDescription)} className="btn-secondary">
                   {showJobDescription ? 'Hide Job Description' : 'Show Job Description'}
@@ -487,15 +781,84 @@ function App() {
                   </div>
                 </div>
               )}
+
+              {/* Proofreading Results */}
+              {proofreadResults && (
+                <div className="proofreading-section" style={{ gridColumn: '1 / -1' }}>
+                  {proofreadResults.resume && (
+                    <div className="result-card full-width">
+                      <h3>Resume Proofreading</h3>
+                      {proofreadResults.resume.hasIssues ? (
+                        <div className="proofread-content">
+                          <div className="issues-list">
+                            {proofreadResults.resume.issues.map((issue, index) => (
+                              <div key={index} className="issue-item">
+                                <div className="issue-header">
+                                  <span className="issue-type">{issue.type}</span>
+                                </div>
+                                <div className="issue-body">
+                                  <p><strong>Original:</strong> "{issue.original}"</p>
+                                  <p><strong>Suggestion:</strong> "{issue.suggestion}"</p>
+                                  <p className="issue-explanation">{issue.explanation}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {proofreadResults.resume.overallFeedback && (
+                            <div className="overall-feedback">
+                              <h4>Overall Feedback</h4>
+                              <p>{proofreadResults.resume.overallFeedback}</p>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="no-issues">✓ No issues found in your resume!</p>
+                      )}
+                    </div>
+                  )}
+
+                  {proofreadResults.coverLetter && (
+                    <div className="result-card full-width">
+                      <h3>Cover Letter Proofreading</h3>
+                      {proofreadResults.coverLetter.hasIssues ? (
+                        <div className="proofread-content">
+                          <div className="issues-list">
+                            {proofreadResults.coverLetter.issues.map((issue, index) => (
+                              <div key={index} className="issue-item">
+                                <div className="issue-header">
+                                  <span className="issue-type">{issue.type}</span>
+                                </div>
+                                <div className="issue-body">
+                                  <p><strong>Original:</strong> "{issue.original}"</p>
+                                  <p><strong>Suggestion:</strong> "{issue.suggestion}"</p>
+                                  <p className="issue-explanation">{issue.explanation}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {proofreadResults.coverLetter.overallFeedback && (
+                            <div className="overall-feedback">
+                              <h4>Overall Feedback</h4>
+                              <p>{proofreadResults.coverLetter.overallFeedback}</p>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="no-issues">✓ No issues found in your cover letter!</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {showPreview && pdfUrl && (
+        {showPreview && (pdfUrl || coverPdfUrl) && (
           <div className="modal-overlay" onClick={handleClosePreview}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
               <div className="modal-header">
-                <h2>Resume Preview</h2>
+                <h2>{previewLabel || 'Preview'}</h2>
                 <div style={{ display: 'flex', gap: '0.75rem' }}>
                   <button onClick={handleDownloadFromPreview} className="btn-primary">
                     Download PDF
@@ -506,7 +869,11 @@ function App() {
                 </div>
               </div>
               <div className="modal-body">
-                <iframe src={pdfUrl} title="Resume Preview" className="pdf-preview" />
+                <iframe 
+                  src={activePreviewTab === 'resume' ? pdfUrl : coverPdfUrl} 
+                  title={activePreviewTab === 'resume' ? 'Resume Preview' : 'Cover Letter Preview'} 
+                  className="pdf-preview" 
+                />
               </div>
             </div>
           </div>
