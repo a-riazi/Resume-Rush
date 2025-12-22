@@ -243,56 +243,6 @@ Separate paragraphs with double newlines (\\n\\n).`;
 }
 
 // Proofread content with Gemini
-async function proofreadWithGemini(content, contentType = 'resume') {
-  try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
-    
-    const prompt = `You are a professional editor. Proofread the following ${contentType} and identify any errors or improvements.
-
-${contentType.toUpperCase()} CONTENT:
-${content}
-
-Analyze the content for:
-- Spelling errors
-- Grammar mistakes
-- Punctuation issues
-- Awkward phrasing or unclear sentences
-- Inconsistent verb tenses
-- Repetitive words or phrases
-- Professional tone issues
-
-Return a JSON object with this structure:
-{
-  "hasIssues": true/false,
-  "issues": [
-    {
-      "type": "spelling|grammar|punctuation|clarity|tone",
-      "original": "the exact text with the issue",
-      "suggestion": "suggested correction",
-      "explanation": "brief explanation of the issue"
-    }
-  ],
-  "overallFeedback": "brief summary of the document quality"
-}
-
-If there are no issues, return { "hasIssues": false, "issues": [], "overallFeedback": "No errors found. The content is clear and professional." }
-
-Return ONLY valid JSON, no markdown formatting.`;
-
-    const result = await model.generateContent(prompt);
-    const response = result.response;
-    let text = response.text();
-    
-    text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    
-    const proofreadResult = JSON.parse(text);
-    return proofreadResult;
-  } catch (error) {
-    console.error('Gemini proofreading error:', error);
-    throw new Error('Failed to proofread with AI');
-  }
-}
-
 
 function toPlainText(value, type = 'generic') {
   if (!value) return '';
@@ -987,25 +937,6 @@ app.post('/api/export-docx-cover', async (req, res) => {
 });
 
 // Proofread endpoint
-app.post('/api/proofread', async (req, res) => {
-  try {
-    const { content, contentType } = req.body;
-
-    if (!content || typeof content !== 'string') {
-      return res.status(400).json({ success: false, error: 'Missing content to proofread.' });
-    }
-
-    const result = await proofreadWithGemini(content, contentType || 'resume');
-
-    res.json({
-      success: true,
-      result
-    });
-  } catch (error) {
-    console.error('Error proofreading:', error);
-    res.status(500).json({ success: false, error: 'Failed to proofread content.' });
-  }
-});
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

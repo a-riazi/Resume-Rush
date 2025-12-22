@@ -74,24 +74,24 @@ function App() {
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
-  const [tailored, setTailored] = useState(null)
-  const [coverLetter, setCoverLetter] = useState(null)
-  const [jobText, setJobText] = useState('')
-  const [jobUsed, setJobUsed] = useState('')
+  const [jobDescriptions, setJobDescriptions] = useState([
+    { id: Date.now(), title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }
+  ])
   const [error, setError] = useState(null)
   const [activePreviewTab, setActivePreviewTab] = useState('resume')
+  const [activeJobId, setActiveJobId] = useState(null)
   const [dragActive, setDragActive] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [docxDownloading, setDocxDownloading] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
   const [showJobDescription, setShowJobDescription] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
+  const [previewJobId, setPreviewJobId] = useState(null)
   const [pdfUrl, setPdfUrl] = useState(null)
   const [coverPdfUrl, setCoverPdfUrl] = useState(null)
   const [templateKey, setTemplateKey] = useState('classic')
   const [previewLabel, setPreviewLabel] = useState('')
-  const [proofreading, setProofreading] = useState(false)
-  const [proofreadResults, setProofreadResults] = useState(null)
+  const [expandedJobId, setExpandedJobId] = useState(null)
 
   // Derived helpers to support both old and new API schemas
   const originalSummary = result?.summary || result?.objective || ''
@@ -107,14 +107,14 @@ function App() {
   const originalProjectsArray = Array.isArray(result?.projects) ? result.projects : null
   const originalProjectsText = !originalProjectsArray && typeof result?.projects === 'string' ? result.projects : ''
 
-  const tailoredSummary = tailored?.tailored_summary || tailored?.tailored_objective || ''
-  const tailoredSkillsArray = Array.isArray(tailored?.target_skills)
-    ? tailored.target_skills
-    : (typeof tailored?.tailored_technical_skills === 'string'
-        ? tailored.tailored_technical_skills.split(',').map(s => s.trim()).filter(Boolean)
+  const tailoredSummary = jobDescriptions[0]?.results?.tailored?.tailored_summary || jobDescriptions[0]?.results?.tailored?.tailored_objective || ''
+  const tailoredSkillsArray = Array.isArray(jobDescriptions[0]?.results?.tailored?.target_skills)
+    ? jobDescriptions[0].results.tailored.target_skills
+    : (typeof jobDescriptions[0]?.results?.tailored?.tailored_technical_skills === 'string'
+        ? jobDescriptions[0].results.tailored.tailored_technical_skills.split(',').map(s => s.trim()).filter(Boolean)
         : [])
-  const tailoredExperienceArray = Array.isArray(tailored?.tailored_experience) ? tailored.tailored_experience : null
-  const tailoredExperienceText = !tailoredExperienceArray && typeof tailored?.tailored_experience === 'string' ? tailored.tailored_experience : ''
+  const tailoredExperienceArray = Array.isArray(jobDescriptions[0]?.results?.tailored?.tailored_experience) ? jobDescriptions[0].results.tailored.tailored_experience : null
+  const tailoredExperienceText = !tailoredExperienceArray && typeof jobDescriptions[0]?.results?.tailored?.tailored_experience === 'string' ? jobDescriptions[0].results.tailored.tailored_experience : ''
 
   // Handle file selection
   const handleFileChange = (e) => {
@@ -165,50 +165,117 @@ function App() {
 
     setFile(selectedFile)
     setResult(null)
-    setTailored(null)
   }
 
-  // Upload and tailor resume
+  // Manage job descriptions
+  const addNewJobDescription = () => {
+    setJobDescriptions([...jobDescriptions, { id: Date.now(), title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }])
+  }
+
+  const removeJob = (jobId) => {
+    if (jobDescriptions.length === 1) {
+      setError('You must have at least one job description.')
+      return
+    }
+    setJobDescriptions(jobDescriptions.filter(j => j.id !== jobId))
+  }
+
+  const updateJobTitle = (jobId, title) => {
+    setJobDescriptions(jobDescriptions.map(j => j.id === jobId ? { ...j, title } : j))
+  }
+
+  const updateJobDescription = (jobId, description) => {
+    setJobDescriptions(jobDescriptions.map(j => j.id === jobId ? { ...j, description } : j))
+  }
+
+  const toggleJobDetails = (jobId) => {
+    setExpandedJobId(expandedJobId === jobId ? null : jobId)
+  }
+
+  // Upload and tailor resume for all jobs
   const handleUpload = async () => {
     if (!file) {
       setError('Please select a file first.')
       return
     }
 
-    if (!jobText.trim()) {
-      setError('Please provide a job description.')
+    const jobsWithContent = jobDescriptions.filter(j => j.description.trim().length > 0)
+    if (jobsWithContent.length === 0) {
+      setError('Please provide at least one job description.')
       return
     }
 
     setLoading(true)
     setError(null)
-    setResult(null)
-    setTailored(null)
-
-    const formData = new FormData()
-    formData.append('resume', file)
-    formData.append('jobDescription', jobText.trim())
 
     try {
-      const response = await axios.post('http://localhost:5000/api/upload', formData, {
+      // First, parse the resume (once)
+      const formData = new FormData()
+      formData.append('resume', file)
+      formData.append('jobDescription', '') // Empty job description to just parse
+
+      const parseResponse = await axios.post('http://localhost:5000/api/upload', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
       })
 
-      if (response.data.success) {
-        setResult(response.data.data)
-        setTailored(response.data.tailored || null)
-        setCoverLetter(response.data.coverLetter || null)
-        // Keep the user's selected template instead of overwriting with recommendation
-        if (jobText.trim().length > 0) {
-          setJobUsed(jobText.trim())
-        } else {
-          setJobUsed('')
-        }
-      } else {
+      if (!parseResponse.data.success) {
         setError('Failed to parse resume. Please try again.')
+        setLoading(false)
+        return
       }
+
+      setResult(parseResponse.data.data)
+
+      // Now tailor for each job description sequentially
+      const updatedJobs = await Promise.all(
+        jobDescriptions.map(async (job) => {
+          if (!job.description.trim()) {
+            return job
+          }
+
+          try {
+            const jobFormData = new FormData()
+            jobFormData.append('resume', file)
+            jobFormData.append('jobDescription', job.description.trim())
+
+            const jobResponse = await axios.post('http://localhost:5000/api/upload', jobFormData, {
+              headers: {
+                'Content-Type': 'multipart/form-data',
+              },
+            })
+
+            if (jobResponse.data.success) {
+              return {
+                ...job,
+                results: {
+                  tailored: jobResponse.data.tailored || null,
+                  coverLetter: jobResponse.data.coverLetter || null,
+                },
+                isLoading: false,
+                error: null,
+              }
+            } else {
+              return {
+                ...job,
+                isLoading: false,
+                error: 'Failed to tailor for this job',
+              }
+            }
+          } catch (err) {
+            console.error('Tailoring error for job:', err)
+            return {
+              ...job,
+              isLoading: false,
+              error: err.response?.data?.error || 'Failed to tailor for this job',
+            }
+          }
+        })
+      )
+
+      setJobDescriptions(updatedJobs)
+      setActiveJobId(updatedJobs[0].id)
     } catch (err) {
       console.error('Upload error:', err)
       setError(err.response?.data?.error || 'An error occurred while processing your resume. Please try again.')
@@ -229,24 +296,30 @@ function App() {
     }
     setFile(null)
     setResult(null)
-    setTailored(null)
-    setCoverLetter(null)
+    setJobDescriptions([{ id: Date.now(), title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }])
     setError(null)
     setShowOriginal(false)
     setShowJobDescription(false)
     setShowPreview(false)
     setTemplateKey('classic')
     setActivePreviewTab('resume')
+    setActiveJobId(null)
+    setPreviewJobId(null)
   }
 
-  const handlePreviewResume = async () => {
+  const handlePreviewResume = async (jobId) => {
     if (!result) return
+    const activeJob = jobDescriptions.find(j => j.id === jobId)
+    if (!activeJob || !activeJob.results.tailored) return
+    
     setDownloading(true)
     setError(null)
-    setPreviewLabel('Your tailored resume')
+    setPreviewLabel(`${activeJob.title ? activeJob.title : 'Job'} · Resume`)
     setActivePreviewTab('resume')
+    setPreviewJobId(jobId)
+    
     try {
-      const payload = { parsed: result, tailored: tailored || null, templateKey }
+      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey }
       const response = await axios.post('http://localhost:5000/api/export-pdf', payload, {
         responseType: 'blob',
       })
@@ -263,18 +336,23 @@ function App() {
     }
   }
 
-  const handlePreviewCover = async () => {
-    if (!result || !coverLetter) return
+  const handlePreviewCover = async (jobId) => {
+    if (!result) return
+    const activeJob = jobDescriptions.find(j => j.id === jobId)
+    if (!activeJob || !activeJob.results.coverLetter) return
+    
     setDownloading(true)
     setError(null)
-    setPreviewLabel('Your cover letter')
+    setPreviewLabel(`${activeJob.title ? activeJob.title : 'Job'} · Cover Letter`)
     setActivePreviewTab('cover')
+    setPreviewJobId(jobId)
+    
     try {
       const coverPayload = { 
         parsed: result, 
         templateKey,
         cover: {
-          body: coverLetter,
+          body: activeJob.results.coverLetter,
         }
       }
       const coverResponse = await axios.post('http://localhost:5000/api/export-pdf-cover', coverPayload, {
@@ -336,12 +414,15 @@ function App() {
     setShowPreview(false)
   }
 
-  const handleDownloadResumeDocx = async () => {
+  const handleDownloadResumeDocx = async (jobId) => {
     if (!result) return
+    const activeJob = jobDescriptions.find(j => j.id === jobId)
+    if (!activeJob || !activeJob.results.tailored) return
+    
     setDocxDownloading(true)
     setError(null)
     try {
-      const payload = { parsed: result, tailored: tailored || null, templateKey }
+      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey }
       const response = await axios.post('http://localhost:5000/api/export-docx', payload, {
         responseType: 'blob',
       })
@@ -350,7 +431,8 @@ function App() {
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.setAttribute('download', 'resume.docx')
+      const filename = activeJob.title ? `resume-${activeJob.title.replace(/\s+/g, '-').toLowerCase()}.docx` : 'resume.docx'
+      link.setAttribute('download', filename)
       document.body.appendChild(link)
       link.click()
       link.remove()
@@ -363,8 +445,11 @@ function App() {
     }
   }
 
-  const handleDownloadCoverDocx = async () => {
-    if (!result || !coverLetter) return
+  const handleDownloadCoverDocx = async (jobId) => {
+    if (!result) return
+    const activeJob = jobDescriptions.find(j => j.id === jobId)
+    if (!activeJob || !activeJob.results.coverLetter) return
+    
     setDocxDownloading(true)
     setError(null)
     try {
@@ -372,7 +457,7 @@ function App() {
         parsed: result, 
         templateKey,
         cover: {
-          body: coverLetter,
+          body: activeJob.results.coverLetter,
         }
       }
       const response = await axios.post('http://localhost:5000/api/export-docx-cover', coverPayload, {
@@ -383,7 +468,8 @@ function App() {
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.setAttribute('download', 'cover-letter.docx')
+      const filename = activeJob.title ? `cover-letter-${activeJob.title.replace(/\s+/g, '-').toLowerCase()}.docx` : 'cover-letter.docx'
+      link.setAttribute('download', filename)
       document.body.appendChild(link)
       link.click()
       link.remove()
@@ -396,64 +482,11 @@ function App() {
     }
   }
 
-  const handleProofread = async () => {
-    if (!result) return
-    setProofreading(true)
-    setError(null)
-    setProofreadResults(null)
-    
-    try {
-      const results = { resume: null, coverLetter: null }
-      
-      // Proofread resume summary and experience
-      if (tailored?.tailored_summary) {
-        const resumeContent = `
-SUMMARY:
-${tailored.tailored_summary}
-
-EXPERIENCE:
-${tailored.tailored_experience?.map(exp => 
-  `${exp.role} at ${exp.company}\n${exp.bullets?.join('\n') || ''}`
-).join('\n\n') || ''}
-`;
-        
-        const resumeResponse = await axios.post('http://localhost:5000/api/proofread', {
-          content: resumeContent,
-          contentType: 'resume'
-        })
-        
-        if (resumeResponse.data.success) {
-          results.resume = resumeResponse.data.result
-        }
-      }
-      
-      // Proofread cover letter
-      if (coverLetter) {
-        const coverResponse = await axios.post('http://localhost:5000/api/proofread', {
-          content: coverLetter,
-          contentType: 'cover letter'
-        })
-        
-        if (coverResponse.data.success) {
-          results.coverLetter = coverResponse.data.result
-        }
-      }
-      
-      setProofreadResults(results)
-    } catch (err) {
-      console.error('Proofread error:', err)
-      setError('Failed to proofread. Please try again.')
-    } finally {
-      setProofreading(false)
-    }
-  }
-
   return (
     <div className="app">
       <header className="header">
-        <h1>🚀 Resume Rocket</h1>
+        <h1><img src="./Logo.png" alt="Resume Rocket Logo" className="header-logo" /> Resume Rocket</h1>
         <p>AI-Powered Resume Tailor</p>
-      </header>
 
           <div className="container">
             {!result ? (
@@ -463,7 +496,7 @@ ${tailored.tailored_experience?.map(exp =>
                     <span className="pre-tailor-label">Ready to tailor</span>
                     {file && <span className="pre-tailor-file">{file.name}</span>}
                   </div>
-                  <button onClick={handleUpload} disabled={loading || !jobText.trim()} className="btn-primary">
+                  <button onClick={handleUpload} disabled={loading || jobDescriptions.every(j => !j.description.trim())} className="btn-primary">
                     {loading ? 'Tailoring...' : 'Tailor Resume'}
                   </button>
                 </div>
@@ -492,19 +525,47 @@ ${tailored.tailored_experience?.map(exp =>
               <p className="file-types">Supported: PDF, DOCX, TXT (Max 10MB)</p>
             </div>
 
-            <div className="job-section">
-              <div className="job-header">
-                <h3>Paste Job Description</h3>
-                <span className="char-count">{jobText.length} chars</span>
+            <div className="job-descriptions-section">
+              <div className="job-descriptions-header">
+                <h3>Add Job Descriptions</h3>
+                <button onClick={addNewJobDescription} className="btn-secondary add-job-btn">
+                  + Add Job
+                </button>
               </div>
-              <textarea
-                className="job-textarea"
-                placeholder="Paste the job description here to tailor your resume"
-                value={jobText}
-                onChange={(e) => setJobText(e.target.value)}
-                rows={8}
-              />
-              <p className="job-helper">Provide the job description to get a perfectly tailored resume.</p>
+              
+              {jobDescriptions.map((job, index) => (
+                <div key={job.id} className="job-input-group">
+                  <div className="job-group-header">
+                    <input
+                      type="text"
+                      placeholder={`Job title/label (optional)`}
+                      value={job.title}
+                      onChange={(e) => updateJobTitle(job.id, e.target.value)}
+                      className="job-title-input"
+                    />
+                    {jobDescriptions.length > 1 && (
+                      <button 
+                        onClick={() => removeJob(job.id)} 
+                        className="btn-danger-small"
+                        title="Remove this job description"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  <div className="job-input-wrapper">
+                    <textarea
+                      className="job-textarea"
+                      placeholder={`Paste job description ${jobDescriptions.length > 1 ? `#${index + 1}` : ''} here`}
+                      value={job.description}
+                      onChange={(e) => updateJobDescription(job.id, e.target.value)}
+                    />
+                    <span className="char-count">{job.description.length} chars</span>
+                  </div>
+                </div>
+              ))}
+
+              <p className="job-helper">Provide job descriptions to get perfectly tailored resumes and cover letters.</p>
             </div>
 
                 <div className="template-select-block">
@@ -547,7 +608,7 @@ ${tailored.tailored_experience?.map(exp =>
                   {loading && (
                     <div className="loading">
                       <div className="spinner"></div>
-                      <p>Creating your tailored resume...</p>
+                      <p>Tailoring your resumes...</p>
                     </div>
                   )}
 
@@ -562,44 +623,27 @@ ${tailored.tailored_experience?.map(exp =>
             ) : (
           <div className="results-section">
             <div className="results-header">
-              <h2>✓ Tailored Resume Ready</h2>
+              <h2>✓ Tailored Resumes Ready</h2>
               <div className="results-actions">
-                <div className="template-picker">
-                  <label htmlFor="template-select">Template</label>
-                  <select
-                    id="template-select"
-                    value={templateKey}
-                    onChange={(e) => setTemplateKey(e.target.value)}
-                  >
-                    {templateOptions.map((opt) => (
-                      <option key={opt.key} value={opt.key}>{opt.label}</option>
-                    ))}
-                  </select>
-                  {tailored?.recommended_template && (
-                    <span className="recommended-pill">Suggested: {tailored.recommended_template}</span>
-                  )}
-                </div>
-                <button onClick={() => handlePreviewResume()} className="btn-primary" disabled={downloading}>
-                  {downloading ? 'Preparing...' : 'Preview Resume PDF'}
-                </button>
-                {coverLetter && (
-                  <button onClick={() => handlePreviewCover()} className="btn-primary" disabled={downloading}>
-                    {downloading ? 'Preparing...' : 'Preview Cover Letter PDF'}
-                  </button>
+                {jobDescriptions.length < 2 && (
+                  <div className="template-picker">
+                    <label htmlFor="template-select">Template</label>
+                    <select
+                      id="template-select"
+                      value={templateKey}
+                      onChange={(e) => setTemplateKey(e.target.value)}
+                    >
+                      {templateOptions.map((opt) => (
+                        <option key={opt.key} value={opt.key}>{opt.label}</option>
+                      ))}
+                    </select>
+                    {jobDescriptions[0]?.results?.tailored?.recommended_template && (
+                      <span className="recommended-pill">Suggested: {jobDescriptions[0].results.tailored.recommended_template}</span>
+                    )}
+                  </div>
                 )}
-                <button onClick={handleDownloadResumeDocx} className="btn-secondary" disabled={docxDownloading}>
-                  {docxDownloading ? 'Preparing...' : 'Download Resume DOCX'}
-                </button>
-                {coverLetter && (
-                  <button onClick={handleDownloadCoverDocx} className="btn-secondary" disabled={docxDownloading}>
-                    {docxDownloading ? 'Preparing...' : 'Download Cover Letter DOCX'}
-                  </button>
-                )}
-                <button onClick={handleProofread} className="btn-secondary" disabled={proofreading}>
-                  {proofreading ? 'Proofreading...' : '🔍 Proofread'}
-                </button>
                 <button onClick={() => setShowJobDescription(!showJobDescription)} className="btn-secondary">
-                  {showJobDescription ? 'Hide Job Description' : 'Show Job Description'}
+                  {showJobDescription ? 'Hide Job Descriptions' : 'Show Job Descriptions'}
                 </button>
                 <button onClick={() => setShowOriginal(!showOriginal)} className="btn-secondary">
                   {showOriginal ? 'Hide Original Resume' : 'Show Original Resume'}
@@ -611,60 +655,113 @@ ${tailored.tailored_experience?.map(exp =>
             </div>
 
             <div className="results-grid">
-                {showJobDescription && jobUsed && (
-                  <div className="job-description-wrapper" style={{ gridColumn: '1 / -1' }}>
-                    <div className="result-card full-width">
-                      <h3>Job Description Used</h3>
-                      <p className="job-used">{jobUsed}</p>
+                {loading && (
+                  <div className="loading-spinner-wrapper" style={{ gridColumn: '1 / -1' }}>
+                    <div className="loading">
+                      <div className="spinner"></div>
+                      <p>Tailoring your resumes...</p>
                     </div>
                   </div>
                 )}
 
-                {tailored && (
-                  <>
-                    <div className="result-card full-width">
-                      <h3>Tailored Summary</h3>
-                      <p>{tailoredSummary || 'Not available'}</p>
-                    </div>
-
-                    {tailoredSkillsArray && tailoredSkillsArray.length > 0 && (
-                      <div className="result-card">
-                        <h3>Target Skills</h3>
-                        <div className="skills-container">
-                          {tailoredSkillsArray.map((skill, index) => (
-                            <span key={index} className="skill-tag">{skill}</span>
-                          ))}
+                {showJobDescription && (
+                  <div className="job-descriptions-wrapper" style={{ gridColumn: '1 / -1' }}>
+                    {jobDescriptions.map((job) => (
+                      job.description && (
+                        <div key={job.id} className="result-card full-width">
+                          <h3>{job.title || `Job ${jobDescriptions.indexOf(job) + 1}`}</h3>
+                          <p className="job-used">{job.description}</p>
                         </div>
-                      </div>
-                    )}
-
-                    {tailoredExperienceArray && tailoredExperienceArray.length > 0 && (
-                      <div className="result-card full-width">
-                        <h3>Tailored Experience</h3>
-                        {tailoredExperienceArray.map((exp, index) => (
-                          <div key={index} className="experience-item">
-                            <h4>{exp.role} at {exp.company}</h4>
-                            <p className="dates">{exp.dates}</p>
-                            {exp.bullets && exp.bullets.length > 0 && (
-                              <ul className="bullet-list">
-                                {exp.bullets.map((b, i) => (
-                                  <li key={i}>{b}</li>
-                                ))}
-                              </ul>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {!tailoredExperienceArray && tailoredExperienceText && (
-                      <div className="result-card full-width">
-                        <h3>Tailored Experience</h3>
-                        <p>{tailoredExperienceText}</p>
-                      </div>
-                    )}
-                  </>
+                      )
+                    ))}
+                  </div>
                 )}
+
+                {jobDescriptions.map((job) => (
+                  job.results.tailored && (
+                    <div key={job.id} className="job-result-block" style={{ gridColumn: '1 / -1' }}>
+                      <div className="job-result-header">
+                        <h3>{job.title ? `${job.title} · Resume & Cover Letter` : `Job ${jobDescriptions.indexOf(job) + 1} · Resume & Cover Letter`}</h3>
+                        <button 
+                          onClick={() => toggleJobDetails(job.id)} 
+                          className="btn-toggle-details"
+                        >
+                          {expandedJobId === job.id ? '▼ Hide Details' : '▶ Show Details'}
+                        </button>
+                      </div>
+
+                      {job.isLoading && (
+                        <div className="result-card full-width">
+                          <p>Tailoring for this job...</p>
+                        </div>
+                      )}
+
+                      {job.error && (
+                        <div className="result-card full-width error">
+                          <p>{job.error}</p>
+                        </div>
+                      )}
+
+                      <div className="job-action-buttons">
+                        <button onClick={() => handlePreviewResume(job.id)} className="btn-primary" disabled={downloading}>
+                          {downloading ? 'Preparing...' : 'Preview Resume PDF'}
+                        </button>
+                        {job.results.coverLetter && (
+                          <button onClick={() => handlePreviewCover(job.id)} className="btn-primary" disabled={downloading}>
+                            {downloading ? 'Preparing...' : 'Preview Cover Letter PDF'}
+                          </button>
+                        )}
+                        <button onClick={() => handleDownloadResumeDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
+                          {docxDownloading ? 'Preparing...' : 'Download Resume DOCX'}
+                        </button>
+                        {job.results.coverLetter && (
+                          <button onClick={() => handleDownloadCoverDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
+                            {docxDownloading ? 'Preparing...' : 'Download Cover Letter DOCX'}
+                          </button>
+                        )}
+                      </div>
+
+                      {expandedJobId === job.id && (
+                        <>
+                          <div className="result-card full-width">
+                            <h3>Tailored Summary</h3>
+                            <p>{job.results.tailored?.tailored_summary || 'Not available'}</p>
+                          </div>
+
+                          {job.results.tailored?.target_skills && job.results.tailored.target_skills.length > 0 && (
+                            <div className="result-card">
+                              <h3>Target Skills</h3>
+                              <div className="skills-container">
+                                {job.results.tailored.target_skills.map((skill, index) => (
+                                  <span key={index} className="skill-tag">{skill}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {job.results.tailored?.tailored_experience && job.results.tailored.tailored_experience.length > 0 && (
+                            <div className="result-card full-width">
+                              <h3>Tailored Experience</h3>
+                              {job.results.tailored.tailored_experience.map((exp, index) => (
+                                <div key={index} className="experience-item">
+                                  <h4>{exp.role} at {exp.company}</h4>
+                                  <p className="dates">{exp.dates}</p>
+                                  {exp.bullets && exp.bullets.length > 0 && (
+                                    <ul className="bullet-list">
+                                      {exp.bullets.map((b, i) => (
+                                        <li key={i}>{b}</li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )
+                ))}
 
               {showOriginal && (
                 <div className="original-resume-wrapper" style={{ gridColumn: '1 / -1' }}>
@@ -782,74 +879,6 @@ ${tailored.tailored_experience?.map(exp =>
                 </div>
               )}
 
-              {/* Proofreading Results */}
-              {proofreadResults && (
-                <div className="proofreading-section" style={{ gridColumn: '1 / -1' }}>
-                  {proofreadResults.resume && (
-                    <div className="result-card full-width">
-                      <h3>Resume Proofreading</h3>
-                      {proofreadResults.resume.hasIssues ? (
-                        <div className="proofread-content">
-                          <div className="issues-list">
-                            {proofreadResults.resume.issues.map((issue, index) => (
-                              <div key={index} className="issue-item">
-                                <div className="issue-header">
-                                  <span className="issue-type">{issue.type}</span>
-                                </div>
-                                <div className="issue-body">
-                                  <p><strong>Original:</strong> "{issue.original}"</p>
-                                  <p><strong>Suggestion:</strong> "{issue.suggestion}"</p>
-                                  <p className="issue-explanation">{issue.explanation}</p>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          {proofreadResults.resume.overallFeedback && (
-                            <div className="overall-feedback">
-                              <h4>Overall Feedback</h4>
-                              <p>{proofreadResults.resume.overallFeedback}</p>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <p className="no-issues">✓ No issues found in your resume!</p>
-                      )}
-                    </div>
-                  )}
-
-                  {proofreadResults.coverLetter && (
-                    <div className="result-card full-width">
-                      <h3>Cover Letter Proofreading</h3>
-                      {proofreadResults.coverLetter.hasIssues ? (
-                        <div className="proofread-content">
-                          <div className="issues-list">
-                            {proofreadResults.coverLetter.issues.map((issue, index) => (
-                              <div key={index} className="issue-item">
-                                <div className="issue-header">
-                                  <span className="issue-type">{issue.type}</span>
-                                </div>
-                                <div className="issue-body">
-                                  <p><strong>Original:</strong> "{issue.original}"</p>
-                                  <p><strong>Suggestion:</strong> "{issue.suggestion}"</p>
-                                  <p className="issue-explanation">{issue.explanation}</p>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          {proofreadResults.coverLetter.overallFeedback && (
-                            <div className="overall-feedback">
-                              <h4>Overall Feedback</h4>
-                              <p>{proofreadResults.coverLetter.overallFeedback}</p>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <p className="no-issues">✓ No issues found in your cover letter!</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           </div>
         )}
@@ -879,7 +908,8 @@ ${tailored.tailored_experience?.map(exp =>
           </div>
         )}
       </div>
-    </div>
+    </header>
+  </div>
   )
 }
 
