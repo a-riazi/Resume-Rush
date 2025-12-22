@@ -1205,4 +1205,8 @@ app.listen(PORT, () => {
   console.log(`🚀 Resume Rocket server running on http://localhost:${PORT}`);
   console.log(`✓ Gemini API configured`);
   console.log(`✓ Ready to parse resumes`);
+  console.log(`📋 Environment check:`);
+  console.log(`  PORT: ${PORT}`);
+  console.log(`  NODE_ENV: ${process.env.NODE_ENV}`);
+  console.log(`  GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? '✓ Set' : '❌ Missing'}`);
 });
