@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import axios from 'axios'
-import './App.css'
+import '../App.css'
+
+// Base API URL comes from environment; falls back to same-origin
+const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 const templateOptions = [
   { key: 'classic', label: 'Classic', accent: '#111', heading: '#111', body: '#222', bg: '#f4f2ec' },
@@ -70,7 +73,29 @@ const sampleParsed = {
   ],
 }
 
-function App() {
+const HOME_STATE_KEY = 'resume-rush-home-state'
+const CHECKBOX_SETTINGS_KEY = 'resume-rush-checkbox-settings'
+const PDF_TYPE = 'application/pdf'
+
+// Helper function to get initial checkbox state from sessionStorage
+function getInitialCheckboxState() {
+  try {
+    const saved = sessionStorage.getItem(CHECKBOX_SETTINGS_KEY)
+    if (saved) {
+      const parsed = JSON.parse(saved)
+      return {
+        generateResume: parsed.generateResume !== undefined ? parsed.generateResume : true,
+        generateCoverLetter: parsed.generateCoverLetter !== undefined ? parsed.generateCoverLetter : true,
+        limitToOnePage: parsed.limitToOnePage !== undefined ? parsed.limitToOnePage : false,
+      }
+    }
+  } catch (err) {
+    console.error('Failed to read checkbox settings:', err)
+  }
+  return { generateResume: true, generateCoverLetter: true, limitToOnePage: false }
+}
+
+export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) {
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
@@ -92,8 +117,77 @@ function App() {
   const [templateKey, setTemplateKey] = useState('classic')
   const [previewLabel, setPreviewLabel] = useState('')
   const [expandedJobId, setExpandedJobId] = useState(null)
+  const [uploadPreviewUrl, setUploadPreviewUrl] = useState(null)
+  const [showUploadPreview, setShowUploadPreview] = useState(false)
+  const initialCheckboxState = getInitialCheckboxState()
+  const [generateResume, setGenerateResume] = useState(initialCheckboxState.generateResume)
+  const [generateCoverLetter, setGenerateCoverLetter] = useState(initialCheckboxState.generateCoverLetter)
+  const [limitToOnePage, setLimitToOnePage] = useState(initialCheckboxState.limitToOnePage)
 
-  // Derived helpers to support both old and new API schemas
+  // Restore persisted state so returning to Home keeps results visible
+  useEffect(() => {
+    const saved = sessionStorage.getItem(HOME_STATE_KEY)
+    if (!saved) return
+    try {
+      const parsed = JSON.parse(saved)
+      if (parsed.result) setResult(parsed.result)
+      if (Array.isArray(parsed.jobDescriptions)) setJobDescriptions(parsed.jobDescriptions)
+      if (parsed.templateKey) setTemplateKey(parsed.templateKey)
+      if (parsed.activeJobId) setActiveJobId(parsed.activeJobId)
+      setShowOriginal(Boolean(parsed.showOriginal))
+      setShowJobDescription(Boolean(parsed.showJobDescription))
+      if (parsed.loading) setLoading(parsed.loading)
+      if (parsed.error) setError(parsed.error)
+      if (parsed.fileMetadata) {
+        // Create a pseudo-File object from metadata for display purposes
+        const pseudoFile = new File([], parsed.fileMetadata.name, { type: parsed.fileMetadata.type })
+        Object.defineProperty(pseudoFile, 'size', { value: parsed.fileMetadata.size })
+        setFile(pseudoFile)
+      }
+    } catch (err) {
+      console.error('Failed to restore saved state:', err)
+    }
+  }, [])
+
+  // Persist checkbox settings
+  useEffect(() => {
+    const snapshot = {
+      generateResume,
+      generateCoverLetter,
+      limitToOnePage,
+    }
+    try {
+      sessionStorage.setItem(CHECKBOX_SETTINGS_KEY, JSON.stringify(snapshot))
+    } catch (err) {
+      console.error('Failed to persist checkbox settings:', err)
+    }
+  }, [generateResume, generateCoverLetter, limitToOnePage])
+
+  // Persist main state (results, job descriptions, etc.) whenever they change
+  useEffect(() => {
+    // Always save state if we have a file or results
+    if (!file && !result && jobDescriptions.every(j => !j.results.tailored && !j.results.coverLetter)) {
+      sessionStorage.removeItem(HOME_STATE_KEY)
+      return
+    }
+    const snapshot = {
+      result,
+      jobDescriptions,
+      templateKey,
+      activeJobId,
+      showOriginal,
+      showJobDescription,
+      loading,
+      error,
+      fileMetadata: file ? { name: file.name, size: file.size, type: file.type } : null,
+    }
+    try {
+      sessionStorage.setItem(HOME_STATE_KEY, JSON.stringify(snapshot))
+    } catch (err) {
+      console.error('Failed to persist state:', err)
+    }
+  }, [result, jobDescriptions, templateKey, activeJobId, showOriginal, showJobDescription, file, loading, error])
+
   const originalSummary = result?.summary || result?.objective || ''
   const originalSkillsArray = Array.isArray(result?.skills)
     ? result.skills
@@ -116,13 +210,18 @@ function App() {
   const tailoredExperienceArray = Array.isArray(jobDescriptions[0]?.results?.tailored?.tailored_experience) ? jobDescriptions[0].results.tailored.tailored_experience : null
   const tailoredExperienceText = !tailoredExperienceArray && typeof jobDescriptions[0]?.results?.tailored?.tailored_experience === 'string' ? jobDescriptions[0].results.tailored.tailored_experience : ''
 
-  // Handle file selection
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0]
     validateAndSetFile(selectedFile)
   }
 
-  // Handle drag events
+  const revokePreviewUrl = () => {
+    if (uploadPreviewUrl) {
+      window.URL.revokeObjectURL(uploadPreviewUrl)
+      setUploadPreviewUrl(null)
+    }
+  }
+
   const handleDrag = (e) => {
     e.preventDefault()
     e.stopPropagation()
@@ -133,7 +232,6 @@ function App() {
     }
   }
 
-  // Handle drop
   const handleDrop = (e) => {
     e.preventDefault()
     e.stopPropagation()
@@ -144,14 +242,13 @@ function App() {
     }
   }
 
-  // Validate file type and size
   const validateAndSetFile = (selectedFile) => {
     setError(null)
     
     if (!selectedFile) return
 
-    const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain']
-    const maxSize = 10 * 1024 * 1024 // 10MB
+    const allowedTypes = [PDF_TYPE, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain']
+    const maxSize = 10 * 1024 * 1024
 
     if (!allowedTypes.includes(selectedFile.type)) {
       setError('Invalid file type. Please upload a PDF, DOCX, or TXT file.')
@@ -163,13 +260,39 @@ function App() {
       return
     }
 
+    revokePreviewUrl()
+    const url = window.URL.createObjectURL(selectedFile)
+    setUploadPreviewUrl(url)
     setFile(selectedFile)
     setResult(null)
+    setShowPreview(false)
+    setPdfUrl(null)
+    setCoverPdfUrl(null)
+    setPreviewJobId(null)
+    setActiveJobId(null)
+    setShowOriginal(false)
+    setShowJobDescription(false)
+    sessionStorage.removeItem(HOME_STATE_KEY)
   }
 
-  // Manage job descriptions
   const addNewJobDescription = () => {
     setJobDescriptions([...jobDescriptions, { id: Date.now(), title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }])
+  }
+
+  const handleRemoveFile = () => {
+    revokePreviewUrl()
+    setFile(null)
+    setResult(null)
+    setPdfUrl(null)
+    setCoverPdfUrl(null)
+    setShowPreview(false)
+    setShowUploadPreview(false)
+    setPreviewJobId(null)
+    setActiveJobId(null)
+    setShowOriginal(false)
+    setShowJobDescription(false)
+    setJobDescriptions((prev) => prev.map(j => ({ ...j, results: { tailored: null, coverLetter: null }, isLoading: false, error: null })))
+    sessionStorage.removeItem(HOME_STATE_KEY)
   }
 
   const removeJob = (jobId) => {
@@ -188,11 +311,39 @@ function App() {
     setJobDescriptions(jobDescriptions.map(j => j.id === jobId ? { ...j, description } : j))
   }
 
+  const inferJobTitle = async (description) => {
+    try {
+      const trimmed = description?.trim()
+      if (!trimmed) return null
+      const resp = await axios.post(`${API_BASE_URL}/api/infer-job-title`, { description: trimmed })
+      if (resp.data?.success && resp.data?.title) {
+        return resp.data.title
+      }
+      return null
+    } catch (err) {
+      console.error('Infer job title error:', err)
+      return null
+    }
+  }
+
+  const deriveJobLabel = (job, index) => {
+    const title = job.title?.trim()
+    if (title) return title
+
+    const desc = job.description?.trim()
+    if (desc) {
+      const words = desc.split(/\s+/)
+      const snippet = words.slice(0, 6).join(' ')
+      return words.length > 6 ? `${snippet}…` : snippet
+    }
+
+    return `Job ${index + 1}`
+  }
+
   const toggleJobDetails = (jobId) => {
     setExpandedJobId(expandedJobId === jobId ? null : jobId)
   }
 
-  // Upload and tailor resume for all jobs
   const handleUpload = async () => {
     if (!file) {
       setError('Please select a file first.')
@@ -205,16 +356,23 @@ function App() {
       return
     }
 
+    if (!generateResume && !generateCoverLetter) {
+      setError('Please select at least one output option (Resume or Cover Letter).')
+      return
+    }
+
     setLoading(true)
     setError(null)
 
     try {
-      // First, parse the resume (once)
       const formData = new FormData()
       formData.append('resume', file)
-      formData.append('jobDescription', '') // Empty job description to just parse
+      formData.append('jobDescription', '')
+      formData.append('generateResume', generateResume)
+      formData.append('generateCoverLetter', generateCoverLetter)
+      formData.append('limitToOnePage', limitToOnePage)
 
-      const parseResponse = await axios.post('http://localhost:5000/api/upload', formData, {
+      const parseResponse = await axios.post(`${API_BASE_URL}/api/upload`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -228,27 +386,36 @@ function App() {
 
       setResult(parseResponse.data.data)
 
-      // Now tailor for each job description sequentially
       const updatedJobs = await Promise.all(
         jobDescriptions.map(async (job) => {
           if (!job.description.trim()) {
+            console.log(`[handleUpload] Skipping job ${job.id} - no description`);
             return job
           }
 
           try {
-            const jobFormData = new FormData()
-            jobFormData.append('resume', file)
-            jobFormData.append('jobDescription', job.description.trim())
+            console.log(`[handleUpload] Processing job ${job.id}: "${job.description.substring(0, 50)}..."`);
+            // Use the faster /api/tailor endpoint for job-specific tailoring
+            const tailorPayload = {
+              parsed: parseResponse.data.data,
+              jobDescription: job.description.trim(),
+              generateResume: generateResume,
+              generateCoverLetter: generateCoverLetter,
+              limitToOnePage: limitToOnePage
+            }
 
-            const jobResponse = await axios.post('http://localhost:5000/api/upload', jobFormData, {
-              headers: {
-                'Content-Type': 'multipart/form-data',
-              },
+            console.log(`[handleUpload] Sending tailor request for job ${job.id}...`);
+            const jobResponse = await axios.post(`${API_BASE_URL}/api/tailor`, tailorPayload, {
+              timeout: 120000 // 2 minute timeout
             })
+            console.log(`[handleUpload] Received tailor response for job ${job.id}:`, jobResponse.data);
+
+            const inferredTitle = job.title?.trim() || await inferJobTitle(job.description)
 
             if (jobResponse.data.success) {
               return {
                 ...job,
+                title: inferredTitle || job.title,
                 results: {
                   tailored: jobResponse.data.tailored || null,
                   coverLetter: jobResponse.data.coverLetter || null,
@@ -259,14 +426,17 @@ function App() {
             } else {
               return {
                 ...job,
+                title: inferredTitle || job.title,
                 isLoading: false,
                 error: 'Failed to tailor for this job',
               }
             }
           } catch (err) {
             console.error('Tailoring error for job:', err)
+            const inferredTitle = job.title?.trim() || await inferJobTitle(job.description)
             return {
               ...job,
+              title: inferredTitle || job.title,
               isLoading: false,
               error: err.response?.data?.error || 'Failed to tailor for this job',
             }
@@ -284,7 +454,6 @@ function App() {
     }
   }
 
-  // Reset to upload new file
   const handleReset = () => {
     if (pdfUrl) {
       window.URL.revokeObjectURL(pdfUrl)
@@ -294,6 +463,7 @@ function App() {
       window.URL.revokeObjectURL(coverPdfUrl)
       setCoverPdfUrl(null)
     }
+    revokePreviewUrl()
     setFile(null)
     setResult(null)
     setJobDescriptions([{ id: Date.now(), title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }])
@@ -305,6 +475,7 @@ function App() {
     setActivePreviewTab('resume')
     setActiveJobId(null)
     setPreviewJobId(null)
+    sessionStorage.removeItem(HOME_STATE_KEY)
   }
 
   const handlePreviewResume = async (jobId) => {
@@ -319,8 +490,8 @@ function App() {
     setPreviewJobId(jobId)
     
     try {
-      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey }
-      const response = await axios.post('http://localhost:5000/api/export-pdf', payload, {
+      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey, limitToOnePage }
+      const response = await axios.post(`${API_BASE_URL}/api/export-pdf`, payload, {
         responseType: 'blob',
       })
 
@@ -351,11 +522,12 @@ function App() {
       const coverPayload = { 
         parsed: result, 
         templateKey,
+        limitToOnePage,
         cover: {
           body: activeJob.results.coverLetter,
         }
       }
-      const coverResponse = await axios.post('http://localhost:5000/api/export-pdf-cover', coverPayload, {
+      const coverResponse = await axios.post(`${API_BASE_URL}/api/export-pdf-cover`, coverPayload, {
         responseType: 'blob',
       })
       const coverBlob = new Blob([coverResponse.data], { type: 'application/pdf' })
@@ -376,7 +548,7 @@ function App() {
     setPreviewLabel(`Sample · ${templateOptions.find((t) => t.key === key)?.label || key}`)
     try {
       const payload = { parsed: sampleParsed, tailored: null, templateKey: key }
-      const response = await axios.post('http://localhost:5000/api/export-pdf', payload, {
+      const response = await axios.post(`${API_BASE_URL}/api/export-pdf`, payload, {
         responseType: 'blob',
       })
 
@@ -414,6 +586,8 @@ function App() {
     setShowPreview(false)
   }
 
+  useEffect(() => () => revokePreviewUrl(), [])
+
   const handleDownloadResumeDocx = async (jobId) => {
     if (!result) return
     const activeJob = jobDescriptions.find(j => j.id === jobId)
@@ -422,8 +596,8 @@ function App() {
     setDocxDownloading(true)
     setError(null)
     try {
-      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey }
-      const response = await axios.post('http://localhost:5000/api/export-docx', payload, {
+      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey, limitToOnePage }
+      const response = await axios.post(`${API_BASE_URL}/api/export-docx`, payload, {
         responseType: 'blob',
       })
 
@@ -456,11 +630,12 @@ function App() {
       const coverPayload = { 
         parsed: result, 
         templateKey,
+        limitToOnePage,
         cover: {
           body: activeJob.results.coverLetter,
         }
       }
-      const response = await axios.post('http://localhost:5000/api/export-docx-cover', coverPayload, {
+      const response = await axios.post(`${API_BASE_URL}/api/export-docx-cover`, coverPayload, {
         responseType: 'blob',
       })
 
@@ -483,7 +658,7 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app ${darkMode ? 'dark-mode' : ''}`}>
       <header className="header">
         <h1><img src="./Logo.png" alt="Resume Rush Logo" className="header-logo" /> Resume Rush</h1>
         <p>AI-Powered Resume Tailor</p>
@@ -491,20 +666,103 @@ function App() {
           <div className="container">
             {!result ? (
               <>
-                <div className="pre-tailor-bar" style={{ display: file ? 'flex' : 'none' }}>
-                  <div className="pre-tailor-info">
-                    <span className="pre-tailor-label">Ready to tailor</span>
-                    {file && <span className="pre-tailor-file">{file.name}</span>}
-                  </div>
-                  <div className="pre-tailor-actions">
-                    <span className="consent-note">By pressing Tailor you agree to our <a href="/terms" className="consent-link">Terms</a>.</span>
-                    <button onClick={handleUpload} disabled={loading || jobDescriptions.every(j => !j.description.trim())} className="btn-primary">
-                      {loading ? 'Tailoring...' : 'Tailor Resume'}
-                    </button>
-                  </div>
-                </div>
-
                 <div className="upload-section">
+                  <input
+                    type="file"
+                    id="file-input"
+                    accept=".pdf,.docx,.txt"
+                    onChange={handleFileChange}
+                    style={{ display: 'none' }}
+                  />
+
+                  {file ? (
+                    <div className="upload-preview-card">
+                      <div className="upload-preview-header">
+                        <div className="file-headings">
+                          <span className="pre-tailor-label">Ready to tailor</span>
+                          <span className="file-name">{file.name}</span>
+                          <span className="file-meta">{(file.size / (1024 * 1024)).toFixed(2)} MB · {file.type || 'File'}</span>
+                        </div>
+                        <div className="upload-preview-actions">
+                          {uploadPreviewUrl && file.type === PDF_TYPE && (
+                            <button 
+                              type="button" 
+                              className="btn-secondary" 
+                              onClick={() => setShowUploadPreview(!showUploadPreview)}
+                            >
+                              {showUploadPreview ? 'Hide Preview' : 'Preview PDF'}
+                            </button>
+                          )}
+                          <label htmlFor="file-input" className="btn-secondary">Change File</label>
+                          <button type="button" className="btn-danger-small" onClick={handleRemoveFile}>Remove</button>
+                        </div>
+                      </div>
+
+                      <div className="generation-options">
+                        <div className="options-group">
+                          <label className="option-checkbox">
+                            <input 
+                              type="checkbox" 
+                              checked={generateResume} 
+                              onChange={(e) => setGenerateResume(e.target.checked)}
+                              disabled={loading}
+                            />
+                            <span>Generate Resume</span>
+                          </label>
+                          <label className="option-checkbox">
+                            <input 
+                              type="checkbox" 
+                              checked={generateCoverLetter} 
+                              onChange={(e) => setGenerateCoverLetter(e.target.checked)}
+                              disabled={loading}
+                            />
+                            <span>Generate Cover Letter</span>
+                          </label>
+                          <label className="option-checkbox">
+                            <input 
+                              type="checkbox" 
+                              checked={limitToOnePage} 
+                              onChange={(e) => setLimitToOnePage(e.target.checked)}
+                              disabled={loading}
+                            />
+                            <span>Limit to One Page</span>
+                          </label>
+                        </div>
+                        <div className="tailor-action">
+                          <span className="consent-note">By pressing Tailor you agree to our <a href="/terms" className="consent-link">Terms</a>.</span>
+                          <button 
+                            onClick={handleUpload} 
+                            disabled={loading || jobDescriptions.every(j => !j.description.trim()) || (!generateResume && !generateCoverLetter)} 
+                            className="btn-primary"
+                          >
+                            {loading ? 'Tailoring...' : 'Tailor Resume'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {showUploadPreview && uploadPreviewUrl && file.type === PDF_TYPE && (
+                        <div className="upload-preview-body">
+                          <iframe src={uploadPreviewUrl} title="Resume preview" className="pdf-preview-inline" />
+                        </div>
+                      )}
+
+                      {loading && (
+                        <div className="loading inline-loading">
+                          <div className="spinner"></div>
+                          <p>
+                            Tailoring your {generateResume && generateCoverLetter ? 'resumes and cover letters' : generateCoverLetter ? 'cover letters' : 'resumes'}...
+                          </p>
+                        </div>
+                      )}
+
+                      {error && (
+                        <div className="error-message">
+                          <span>⚠️</span>
+                          <p>{error}</p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
             <div
               className={`upload-area ${dragActive ? 'drag-active' : ''}`}
               onDragEnter={handleDrag}
@@ -515,18 +773,12 @@ function App() {
               <div className="upload-icon">📄</div>
               <h3>Upload Your Resume</h3>
               <p>Drag and drop your resume here, or click to browse</p>
-              <input
-                type="file"
-                id="file-input"
-                accept=".pdf,.docx,.txt"
-                onChange={handleFileChange}
-                style={{ display: 'none' }}
-              />
               <label htmlFor="file-input" className="file-label">
                 Choose File
               </label>
               <p className="file-types">Supported: PDF, DOCX, TXT (Max 10MB)</p>
             </div>
+                  )}
 
             <div className="job-descriptions-section">
               <div className="job-descriptions-header">
@@ -572,7 +824,7 @@ function App() {
             </div>
 
                 <div className="template-select-block">
-                  <h3 style={{ color: '#1f1b16', marginBottom: '0', fontSize: '1.4rem', fontWeight: 700 }}>Choose a Style:</h3>
+                  <h3 className="template-section-heading">Choose a Style:</h3>
                   <div className="template-select-block">
 
                     <div className="template-samples" style={{ marginTop: '-0.3rem' }}>
@@ -581,8 +833,9 @@ function App() {
                             key={opt.key}
                           className={`template-sample-card ${templateKey === opt.key ? 'selected' : ''}`}
                           style={{
-                            background: opt.bg,
-                            borderColor: opt.accent,
+                            background: darkMode ? 'linear-gradient(145deg, #121728, #0b0f1d)' : opt.bg,
+                            borderColor: darkMode ? 'rgba(255, 123, 220, 0.35)' : opt.accent,
+                            boxShadow: darkMode ? '0 14px 32px rgba(0, 0, 0, 0.35)' : undefined,
                           }}
                           onClick={() => setTemplateKey(opt.key)}
                           role="button"
@@ -608,14 +861,7 @@ function App() {
                     </div>
                   </div>
 
-                  {loading && (
-                    <div className="loading">
-                      <div className="spinner"></div>
-                      <p>Tailoring your resumes...</p>
-                    </div>
-                  )}
-
-                  {error && (
+                  {error && !file && (
                     <div className="error-message">
                       <span>⚠️</span>
                       <p>{error}</p>
@@ -624,9 +870,9 @@ function App() {
                 </div>
               </>
             ) : (
-          <div className="results-section">
+            <div className="results-section">
             <div className="results-header">
-              <h2>✓ Tailored Resumes Ready</h2>
+              <h2>{generateResume && generateCoverLetter ? '✓ Tailored Resumes & Cover Letters Ready' : generateCoverLetter ? '✓ Tailored Cover Letters Ready' : '✓ Tailored Resumes Ready'}</h2>
               <div className="results-actions">
                 {jobDescriptions.length < 2 && (
                   <div className="template-picker">
@@ -662,36 +908,33 @@ function App() {
                   <div className="loading-spinner-wrapper" style={{ gridColumn: '1 / -1' }}>
                     <div className="loading">
                       <div className="spinner"></div>
-                      <p>Tailoring your resumes...</p>
+                      <p>
+                        Tailoring your {generateResume && generateCoverLetter ? 'resumes and cover letters' : generateCoverLetter ? 'cover letters' : 'resumes'}...
+                      </p>
                     </div>
                   </div>
                 )}
 
-                {showJobDescription && (
-                  <div className="job-descriptions-wrapper" style={{ gridColumn: '1 / -1' }}>
-                    {jobDescriptions.map((job) => (
-                      job.description && (
-                        <div key={job.id} className="result-card full-width">
-                          <h3>{job.title || `Job ${jobDescriptions.indexOf(job) + 1}`}</h3>
-                          <p className="job-used">{job.description}</p>
-                        </div>
-                      )
-                    ))}
-                  </div>
-                )}
-
-                {jobDescriptions.map((job) => (
-                  job.results.tailored && (
+                {jobDescriptions.map((job, index) => (
+                  (job.results.tailored || job.results.coverLetter) && (
                     <div key={job.id} className="job-result-block" style={{ gridColumn: '1 / -1' }}>
-                      <div className="job-result-header">
-                        <h3>{job.title ? `${job.title} · Resume & Cover Letter` : `Job ${jobDescriptions.indexOf(job) + 1} · Resume & Cover Letter`}</h3>
-                        <button 
-                          onClick={() => toggleJobDetails(job.id)} 
-                          className="btn-toggle-details"
-                        >
-                          {expandedJobId === job.id ? '▼ Hide Details' : '▶ Show Details'}
-                        </button>
-                      </div>
+                      {(() => {
+                        const jobLabel = deriveJobLabel(job, index)
+                        const resumePart = job.results.tailored ? 'Resume' : ''
+                        const coverPart = job.results.coverLetter ? 'Cover Letter' : ''
+                        const parts = [resumePart, coverPart].filter(Boolean).join(' & ')
+                        return (
+                          <div className="job-result-header">
+                            <h3>{`${jobLabel} · ${parts || 'Results'}`}</h3>
+                            <button
+                              onClick={() => toggleJobDetails(job.id)}
+                              className="btn-toggle-details"
+                            >
+                              {expandedJobId === job.id ? '▼ Hide Details' : '▶ Show Details'}
+                            </button>
+                          </div>
+                        )
+                      })()}
 
                       {job.isLoading && (
                         <div className="result-card full-width">
@@ -706,30 +949,36 @@ function App() {
                       )}
 
                       <div className="job-action-buttons">
-                        <button onClick={() => handlePreviewResume(job.id)} className="btn-primary" disabled={downloading}>
-                          {downloading ? 'Preparing...' : 'Preview Resume PDF'}
-                        </button>
-                        {job.results.coverLetter && (
-                          <button onClick={() => handlePreviewCover(job.id)} className="btn-primary" disabled={downloading}>
-                            {downloading ? 'Preparing...' : 'Preview Cover Letter PDF'}
-                          </button>
+                        {job.results.tailored && (
+                          <>
+                            <button onClick={() => handlePreviewResume(job.id)} className="btn-primary" disabled={downloading}>
+                              {downloading ? 'Preparing...' : 'Preview Resume PDF'}
+                            </button>
+                            <button onClick={() => handleDownloadResumeDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
+                              {docxDownloading ? 'Preparing...' : 'Download Resume DOCX'}
+                            </button>
+                          </>
                         )}
-                        <button onClick={() => handleDownloadResumeDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
-                          {docxDownloading ? 'Preparing...' : 'Download Resume DOCX'}
-                        </button>
                         {job.results.coverLetter && (
-                          <button onClick={() => handleDownloadCoverDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
-                            {docxDownloading ? 'Preparing...' : 'Download Cover Letter DOCX'}
-                          </button>
+                          <>
+                            <button onClick={() => handlePreviewCover(job.id)} className="btn-primary" disabled={downloading}>
+                              {downloading ? 'Preparing...' : 'Preview Cover Letter PDF'}
+                            </button>
+                            <button onClick={() => handleDownloadCoverDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
+                              {docxDownloading ? 'Preparing...' : 'Download Cover Letter DOCX'}
+                            </button>
+                          </>
                         )}
                       </div>
 
                       {expandedJobId === job.id && (
                         <>
-                          <div className="result-card full-width">
-                            <h3>Tailored Summary</h3>
-                            <p>{job.results.tailored?.tailored_summary || 'Not available'}</p>
-                          </div>
+                          {job.results.tailored && (
+                            <div className="result-card full-width">
+                              <h3>Tailored Summary</h3>
+                              <p>{job.results.tailored?.tailored_summary || 'Not available'}</p>
+                            </div>
+                          )}
 
                           {job.results.tailored?.target_skills && job.results.tailored.target_skills.length > 0 && (
                             <div className="result-card">
@@ -760,17 +1009,39 @@ function App() {
                               ))}
                             </div>
                           )}
+
+                          {job.results.coverLetter && (
+                            <div className="result-card full-width">
+                              <h3>Cover Letter</h3>
+                              <p style={{ whiteSpace: 'pre-line' }}>{job.results.coverLetter.replace(/\\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()}</p>
+                            </div>
+                          )}
                         </>
                       )}
                     </div>
                   )
                 ))}
 
+                {showJobDescription && (
+                  <div className="job-descriptions-wrapper" style={{ gridColumn: '1 / -1' }}>
+                    <h2 className="job-descriptions-heading">Job Descriptions</h2>
+                    <div className="results-grid">
+                      {jobDescriptions.map((job, index) => (
+                        job.description && (
+                          <div key={job.id} className="result-card full-width">
+                            <h3>{deriveJobLabel(job, index)}</h3>
+                            <p className="job-used">{job.description.replace(/\n\s*\n+/g, '\n').replace(/\s+/g, ' ').trim()}</p>
+                          </div>
+                        )
+                      ))}
+                    </div>
+                  </div>
+                )}
+
               {showOriginal && (
                 <div className="original-resume-wrapper" style={{ gridColumn: '1 / -1' }}>
-                  <h2 style={{ color: '#a36500', marginBottom: '1.5rem', fontSize: '1.5rem' }}>Original Resume</h2>
+                  <h2 className="original-resume-heading">Original Resume</h2>
                   <div className="results-grid">
-              {/* Personal Information */}
               <div className="result-card">
                 <h3>Personal Information</h3>
                 <div className="info-row">
@@ -791,7 +1062,6 @@ function App() {
                 </div>
               </div>
 
-              {/* Summary */}
               {originalSummary && (
                 <div className="result-card full-width">
                   <h3>Professional Summary</h3>
@@ -799,7 +1069,6 @@ function App() {
                 </div>
               )}
 
-              {/* Experience */}
               {originalExperienceArray && originalExperienceArray.length > 0 && (
                 <div className="result-card full-width">
                   <h3>Work Experience</h3>
@@ -820,7 +1089,6 @@ function App() {
                 </div>
               )}
 
-              {/* Education */}
               {originalEducationArray && originalEducationArray.length > 0 && (
                 <div className="result-card">
                   <h3>Education</h3>
@@ -841,7 +1109,6 @@ function App() {
                 </div>
               )}
 
-              {/* Skills */}
               {originalSkillsArray && originalSkillsArray.length > 0 && (
                 <div className="result-card">
                   <h3>Skills</h3>
@@ -855,7 +1122,6 @@ function App() {
                 </div>
               )}
 
-              {/* Academic Projects */}
               {originalProjectsArray && originalProjectsArray.length > 0 && (
                 <div className="result-card full-width">
                   <h3>Academic Projects</h3>
@@ -915,5 +1181,3 @@ function App() {
   </div>
   )
 }
-
-export default App

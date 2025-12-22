@@ -1,0 +1,133 @@
+.main-nav {
+  background: linear-gradient(135deg, #f4f8ff 0%, #e9f2ff 100%);
+  padding: 1rem 0;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  transition: background 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+  border-bottom: 1px solid #d7e6ff;
+}
+
+.main-nav.dark {
+  background: rgba(15, 17, 26, 0.9);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  border-color: rgba(255, 123, 220, 0.2);
+}
+
+.nav-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 700;
+  font-size: 1.25rem;
+  color: #0f172a;
+  text-decoration: none;
+}
+
+.nav-logo:hover {
+  color: #1d4ed8;
+}
+
+.main-nav.dark .nav-logo,
+.main-nav.dark .nav-logo:hover {
+  color: #e7e8ff;
+}
+
+.nav-logo-img {
+  height: 56px;
+  width: auto;
+  object-fit: contain;
+}
+
+.nav-menu {
+  display: flex;
+  list-style: none;
+  gap: 2rem;
+  margin: 0;
+  padding: 0;
+}
+
+.nav-link {
+  color: #0f172a;
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.3s;
+}
+
+.nav-link:hover {
+  color: #1d4ed8;
+}
+
+.main-nav.dark .nav-link {
+  color: #e7e8ff;
+}
+
+.main-nav.dark .nav-link:hover {
+  color: #ff9ff0;
+}
+
+.nav-toggle {
+  padding: 0.4rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #2563eb;
+  background: #f4f7ff;
+  color: #1d4ed8;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.nav-toggle:hover {
+  background: #2563eb;
+  color: #f4f7ff;
+}
+
+.main-nav.dark .nav-toggle {
+  border-color: rgba(255, 123, 220, 0.45);
+  background: #0f121c;
+  color: #e7e8ff;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.main-nav.dark .nav-toggle:hover {
+  background: rgba(255, 123, 220, 0.12);
+  color: #ff9ff0;
+}
+
+@media (max-width: 768px) {
+  .nav-menu {
+    gap: 1rem;
+    font-size: 0.9rem;
+  }
+
+  .nav-logo {
+    font-size: 1rem;
+  }
+
+  .nav-container {
+    flex-wrap: wrap;
+  }
+
+  .nav-right {
+    width: 100%;
+    justify-content: flex-end;
+    margin-top: 0.5rem;
+  }
+}

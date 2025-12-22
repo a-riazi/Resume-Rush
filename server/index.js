@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
+const compression = require('compression');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, UnderlineType } = require('docx');
 const pdf = require('pdf-parse');
@@ -16,6 +17,7 @@ const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
+app.use(compression());
 app.use(express.json());
 
 // Configure multer for file uploads
@@ -48,12 +50,56 @@ const upload = multer({
 // Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+async function inferJobTitleWithGemini(jobDescription) {
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+  const prompt = `Infer a concise, professional job title (2-3 words) based on the job description below. Return ONLY the title text, no quotes, no punctuation, no extra words.\n\nJob description:\n${jobDescription}\n\nReturn just the inferred job title:`;
+
+  const result = await model.generateContent(prompt);
+  const text = result.response.text().trim();
+  const cleaned = text.replace(/[\n\r]+/g, ' ').replace(/[^\w\s&\-\/]/g, '').trim();
+  const words = cleaned.split(/\s+/).filter(Boolean).slice(0, 3);
+  return words.join(' ') || 'Role';
+}
+
 // Extract text from PDF
 async function extractTextFromPDF(filePath) {
-  const dataBuffer = fs.readFileSync(filePath);
-  // pdf-parse default export is a function
-  const data = await pdf(dataBuffer);
-  return data.text;
+  // Verify file exists and is readable
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`PDF file not found at path: ${filePath}`);
+  }
+  
+  const stats = fs.statSync(filePath);
+  if (stats.size === 0) {
+    throw new Error('PDF file is empty (0 bytes)');
+  }
+  
+  if (stats.size < 100) {
+    throw new Error(`PDF file is too small (${stats.size} bytes). This may be a corrupted or invalid PDF.`);
+  }
+  
+  try {
+    const dataBuffer = fs.readFileSync(filePath);
+    
+    // Verify PDF magic number (PDF files should start with %PDF)
+    const pdfHeader = dataBuffer.toString('ascii', 0, 4);
+    if (!pdfHeader.startsWith('%PDF')) {
+      throw new Error('File does not appear to be a valid PDF (missing PDF header). The uploaded file may be corrupted or not actually a PDF.');
+    }
+    
+    // pdf-parse default export is a function
+    const data = await pdf(dataBuffer);
+    
+    if (!data.text || data.text.trim().length === 0) {
+      throw new Error('PDF was read but contains no extractable text. The PDF may be image-only or have text extraction disabled.');
+    }
+    
+    return data.text;
+  } catch (error) {
+    if (error.message.includes('No PDF header found')) {
+      throw new Error('Invalid PDF file. The uploaded file is not a valid PDF document.');
+    }
+    throw error;
+  }
 }
 
 // Extract text from DOCX
@@ -146,9 +192,14 @@ Return a JSON object with this exact structure:
 }
 
 // Tailor resume to job description with Gemini
-async function tailorResumeWithGemini(parsedResume, jobDescription) {
+async function tailorResumeWithGemini(parsedResume, jobDescription, limitToOnePage = false) {
   try {
+    console.log('[tailorResumeWithGemini] Starting...');
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+
+    const onePageConstraint = limitToOnePage 
+      ? '\n\n⚠️ CRITICAL: The resume MUST fit on ONE PAGE. Maximize content density. Reduce descriptions to 1-2 lines max. Limit each role to 2-3 bullet points max. Eliminate any section that is not essential. Combine skills inline where possible.'
+      : '';
 
     const prompt = `You are an expert resume tailor. Using ONLY the candidate data provided and the job description, craft a tailored resume summary and bullet points. Do not invent experience that is not present.
 
@@ -180,9 +231,19 @@ Rules:
 - Do NOT mention the job title, company, or that this is tailored to a specific posting; weave fit implicitly without explicit job references.
 - If something is missing, use empty string or empty array.
 - Output must be valid JSON with no trailing commas.
-- For "recommended_template", choose one key from this list: ${templateKeys.join(', ')}.`;
+- For "recommended_template", choose one key from this list: ${templateKeys.join(', ')}.${onePageConstraint}`;
 
-    const result = await model.generateContent(prompt);
+    console.log('[tailorResumeWithGemini] Calling Gemini API...');
+    const startTime = Date.now();
+    const result = await Promise.race([
+      model.generateContent(prompt),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Resume tailoring timed out after 60 seconds')), 60000)
+      )
+    ]);
+    const elapsed = Date.now() - startTime;
+    console.log(`[tailorResumeWithGemini] Gemini API responded in ${elapsed}ms`);
+    
     const response = result.response;
     let text = response.text();
 
@@ -192,16 +253,18 @@ Rules:
     if (tailored && tailored.recommended_template && !templateKeys.includes(tailored.recommended_template)) {
       tailored.recommended_template = 'classic';
     }
+    console.log('[tailorResumeWithGemini] Complete');
     return tailored;
   } catch (error) {
-    console.error('Gemini tailoring error:', error);
-    throw new Error('Failed to tailor resume with AI');
+    console.error('[tailorResumeWithGemini] Error:', error.message);
+    throw new Error(`Failed to tailor resume with AI: ${error.message}`);
   }
 }
 
 // Generate cover letter with Gemini
-async function generateCoverLetterWithGemini(parsedResume, jobDescription) {
+async function generateCoverLetterWithGemini(parsedResume, jobDescription, limitToOnePage = false) {
   try {
+    console.log('[generateCoverLetterWithGemini] Starting...');
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
     
     const resumeSummary = `
@@ -211,6 +274,10 @@ Skills: ${Array.isArray(parsedResume.skills) ? parsedResume.skills.join(', ') : 
 Experience: ${Array.isArray(parsedResume.experience) ? parsedResume.experience.map(e => `${e.role || e.title || ''} at ${e.company || ''}`).join('; ') : 'N/A'}
 Education: ${Array.isArray(parsedResume.education) ? parsedResume.education.map(e => `${e.degree || ''} from ${e.school || ''}`).join('; ') : 'N/A'}
 `;
+
+    const onePageConstraint = limitToOnePage
+      ? '\n\n⚠️ CRITICAL: The cover letter MUST fit on ONE PAGE. Keep it to 3 short paragraphs (100-120 words max each). Avoid redundancy. Be concise and impactful.'
+      : '\n\nWrite in first person. Be professional, confident, and specific. Make connections between the resume and job requirements.\nKeep it concise (3-4 paragraphs total, around 250-350 words).';
 
     const prompt = `You are a professional cover letter writer. Write a compelling, professional cover letter for this job application.
 
@@ -224,21 +291,30 @@ Write a complete cover letter with the following structure:
 - Opening paragraph: Express interest in the position and briefly introduce yourself
 - 2-3 body paragraphs: Highlight relevant experience, skills, and achievements that match the job requirements
 - Closing paragraph: Express enthusiasm and request for an interview
-
-Write in first person. Be professional, confident, and specific. Make connections between the resume and job requirements.
-Keep it concise (3-4 paragraphs total, around 250-350 words).
+${onePageConstraint}
 
 Return ONLY the body paragraphs of the cover letter (no greeting like "Dear Hiring Manager", no closing like "Sincerely" - those will be added automatically).
 Separate paragraphs with double newlines (\\n\\n).`;
 
-    const result = await model.generateContent(prompt);
+    console.log('[generateCoverLetterWithGemini] Calling Gemini API...');
+    const startTime = Date.now();
+    const result = await Promise.race([
+      model.generateContent(prompt),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Cover letter generation timed out after 60 seconds')), 60000)
+      )
+    ]);
+    const elapsed = Date.now() - startTime;
+    console.log(`[generateCoverLetterWithGemini] Gemini API responded in ${elapsed}ms`);
+    
     const response = result.response;
     const text = response.text().trim();
+    console.log('[generateCoverLetterWithGemini] Complete');
     
     return text;
   } catch (error) {
-    console.error('Gemini cover letter generation error:', error);
-    throw new Error('Failed to generate cover letter with AI');
+    console.error('[generateCoverLetterWithGemini] Error:', error.message);
+    throw new Error(`Failed to generate cover letter with AI: ${error.message}`);
   }
 }
 
@@ -333,7 +409,7 @@ function resolvePdfFont(name, isHeading = false) {
   return isHeading ? 'Helvetica-Bold' : 'Helvetica';
 }
 
-function buildResumePdf(doc, parsed = {}, tailored = null, templateKey = 'classic') {
+function buildResumePdf(doc, parsed = {}, tailored = null, templateKey = 'classic', limitToOnePage = false) {
   const style = getTemplate(templateKey);
   const contact = [parsed.email, parsed.phone, parsed.location].filter(Boolean).join(' · ');
   const headingFont = resolvePdfFont(style.pdf.headingFont || style.pdf.font, true);
@@ -393,7 +469,9 @@ function buildResumePdf(doc, parsed = {}, tailored = null, templateKey = 'classi
     : parsed.experience || [];
   if (expList.length > 0) {
     addSectionTitle(doc, 'Experience', style, layout);
-    expList.forEach((exp) => {
+    // Limit to top 3 items if one-page constraint
+    const itemsToShow = limitToOnePage ? expList.slice(0, 3) : expList;
+    itemsToShow.forEach((exp) => {
       const title = exp.role || exp.title || '';
       const company = exp.company || '';
       const heading = [title, company].filter(Boolean).join(' at ');
@@ -408,7 +486,9 @@ function buildResumePdf(doc, parsed = {}, tailored = null, templateKey = 'classi
       }
       if (exp.bullets && Array.isArray(exp.bullets) && exp.bullets.length > 0) {
         doc.moveDown(0.15);
-        exp.bullets.forEach((b) => {
+        // Limit to 2 bullets if one-page constraint
+        const bulletsToShow = limitToOnePage ? exp.bullets.slice(0, 2) : exp.bullets;
+        bulletsToShow.forEach((b) => {
           doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(`• ${b}`, { lineGap: 1.6 });
         });
       }
@@ -416,39 +496,41 @@ function buildResumePdf(doc, parsed = {}, tailored = null, templateKey = 'classi
     });
   }
 
-  // Projects
-  const projects = parsed.projects;
-  if (projects) {
-    addSectionTitle(doc, 'Projects', style, layout);
-    if (Array.isArray(projects)) {
-      projects.forEach((p) => {
-        if (!p || typeof p !== 'object') return;
-        const name = p.name || '';
-        const org = p.organization || '';
-        const heading = [name, org].filter(Boolean).join(' — ');
-        if (heading) {
-          doc.font(headingFont).fontSize(style.pdf.subheadingSize).fillColor(style.docx?.headingColor ? `#${style.docx.headingColor}` : style.pdf.headingColor).text(heading);
-        }
-        if (p.dates) {
-          doc.font(bodyFont).fontSize(style.pdf.bodySize - 1).fillColor('#666').text(p.dates);
-        }
-        if (p.description) {
-          doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(p.description, { lineGap: style.pdf.lineGap });
-        }
-        if (Array.isArray(p.technologies) && p.technologies.length > 0) {
-          doc.moveDown(0.15);
-          doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(`Technologies: ${p.technologies.join(', ')}`, { lineGap: 1.55 });
-        }
-        doc.moveDown(0.5);
-      });
-    } else if (typeof projects === 'string') {
-      doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(projects, { lineGap: style.pdf.lineGap });
+  // Projects (skip if one-page constraint)
+  if (!limitToOnePage) {
+    const projects = parsed.projects;
+    if (projects) {
+      addSectionTitle(doc, 'Projects', style, layout);
+      if (Array.isArray(projects)) {
+        projects.forEach((p) => {
+          if (!p || typeof p !== 'object') return;
+          const name = p.name || '';
+          const org = p.organization || '';
+          const heading = [name, org].filter(Boolean).join(' — ');
+          if (heading) {
+            doc.font(headingFont).fontSize(style.pdf.subheadingSize).fillColor(style.docx?.headingColor ? `#${style.docx.headingColor}` : style.pdf.headingColor).text(heading);
+          }
+          if (p.dates) {
+            doc.font(bodyFont).fontSize(style.pdf.bodySize - 1).fillColor('#666').text(p.dates);
+          }
+          if (p.description) {
+            doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(p.description, { lineGap: style.pdf.lineGap });
+          }
+          if (Array.isArray(p.technologies) && p.technologies.length > 0) {
+            doc.moveDown(0.15);
+            doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(`Technologies: ${p.technologies.join(', ')}`, { lineGap: 1.55 });
+          }
+          doc.moveDown(0.5);
+        });
+      } else if (typeof projects === 'string') {
+        doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(projects, { lineGap: style.pdf.lineGap });
+      }
     }
   }
 }
 
 // Build PDF cover letter (mirrors DOCX layout/colors)
-function buildCoverPdf(doc, parsed = {}, templateKey = 'classic', cover = {}) {
+function buildCoverPdf(doc, parsed = {}, templateKey = 'classic', cover = {}, limitToOnePage = false) {
   const style = getTemplate(templateKey);
   const headingFont = resolvePdfFont(style.pdf.headingFont || style.pdf.font, true);
   const bodyFont = resolvePdfFont(style.pdf.font, false);
@@ -503,10 +585,20 @@ function buildCoverPdf(doc, parsed = {}, templateKey = 'classic', cover = {}) {
 }
 
 // Build DOCX resume
-async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'classic') {
+async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'classic', limitToOnePage = false) {
   const style = getTemplate(templateKey);
   const layout = style.layout || 'traditional';
   const children = [];
+
+  // Adjust spacing for one-page constraint
+  const spacing = limitToOnePage ? {
+    titleAfter: style.docx.titleAfter ? Math.floor(style.docx.titleAfter * 0.7) : 80,
+    contactAfter: style.docx.contactAfter ? Math.floor(style.docx.contactAfter * 0.7) : 80,
+    headingBefore: style.docx.headingBefore ? Math.floor(style.docx.headingBefore * 0.6) : 60,
+    headingAfter: style.docx.headingAfter ? Math.floor(style.docx.headingAfter * 0.6) : 60,
+    bodyAfter: style.docx.bodyAfter ? Math.floor(style.docx.bodyAfter * 0.6) : 60,
+    bulletSpacing: style.docx.bulletSpacing ? Math.floor(style.docx.bulletSpacing * 0.6) : 40,
+  } : style.docx;
 
   const name = parsed.name || 'Resume';
   const contact = [parsed.email, parsed.phone, parsed.location].filter(Boolean).join(' · ');
@@ -525,7 +617,7 @@ async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'clas
     const underline = (layout === 'accented' || layout === 'minimalist') ? { type: UnderlineType.SINGLE } : undefined;
     children.push(new Paragraph({
       heading: HeadingLevel.HEADING_2,
-      spacing: { before: style.docx.headingBefore, after: style.docx.headingAfter },
+      spacing: { before: spacing.headingBefore, after: spacing.headingAfter },
       alignment: headingAlignment,
       children: [new TextRun({ 
         text: headingText, 
@@ -543,7 +635,7 @@ async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'clas
   const addSubheading = (text) => {
     if (!text) return;
     children.push(new Paragraph({
-      spacing: { before: 100, after: 60 },
+      spacing: { before: limitToOnePage ? 60 : 100, after: limitToOnePage ? 40 : 60 },
       children: [new TextRun({ 
         text, 
         font: style.docx.headingFont || style.docx.font || 'Calibri', 
@@ -558,12 +650,12 @@ async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'clas
     if (!text) return;
     children.push(new Paragraph({
       bullet: { level },
-      spacing: { after: style.docx.bulletSpacing },
+      spacing: { after: spacing.bulletSpacing },
       children: [new TextRun({ text, font: style.docx.font || 'Calibri', size: bodySizeDocx, color: style.docx.bodyColor || undefined })],
     }));
   };
 
-  const addText = (text, spacingAfter = style.docx.bodyAfter, indent = 0) => {
+  const addText = (text, spacingAfter = spacing.bodyAfter, indent = 0) => {
     if (!text) return;
     children.push(new Paragraph({
       spacing: { after: spacingAfter },
@@ -575,7 +667,7 @@ async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'clas
   // Header with proper sizing
   children.push(new Paragraph({
     heading: HeadingLevel.TITLE,
-    spacing: { after: style.docx.titleAfter },
+    spacing: { after: spacing.titleAfter },
     alignment: titleAlignment,
     children: [new TextRun({ 
       text: name, 
@@ -587,7 +679,7 @@ async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'clas
   }));
   if (contact) {
     children.push(new Paragraph({ 
-      spacing: { after: style.docx.contactAfter }, 
+      spacing: { after: spacing.contactAfter }, 
       alignment: titleAlignment,
       children: [new TextRun({ 
         text: contact, 
@@ -636,7 +728,9 @@ async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'clas
     : parsed.experience || [];
   if (Array.isArray(expList) && expList.length > 0) {
     addHeading('Experience');
-    expList.forEach((exp) => {
+    // Limit to top 3 items if one-page constraint, otherwise show all
+    const itemsToShow = limitToOnePage ? expList.slice(0, 3) : expList;
+    itemsToShow.forEach((exp) => {
       if (!exp || typeof exp !== 'object') return;
       const title = exp.role || exp.title || '';
       const company = exp.company || '';
@@ -645,42 +739,46 @@ async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'clas
         addSubheading(heading);
       }
       if (exp.dates) {
-        addText(exp.dates, 80, 0);
+        addText(exp.dates, limitToOnePage ? 40 : 80, 0);
       }
-      if (exp.description) addText(exp.description, 100, 0);
+      if (exp.description) addText(exp.description, limitToOnePage ? 60 : 100, 0);
       if (Array.isArray(exp.bullets) && exp.bullets.length > 0) {
-        exp.bullets.forEach((b) => addBullet(b, 0));
+        // Limit to 2 bullets if one-page, otherwise show all
+        const bulletsToShow = limitToOnePage ? exp.bullets.slice(0, 2) : exp.bullets;
+        bulletsToShow.forEach((b) => addBullet(b, 0));
       }
     });
   }
 
-  // Projects
-  const projects = parsed.projects;
-  if (projects) {
-    addHeading('Projects');
-    if (Array.isArray(projects)) {
-      projects.forEach((p) => {
-        if (!p || typeof p !== 'object') return;
-        const heading = [p.name, p.organization].filter(Boolean).join(' — ');
-        if (heading) {
-          addSubheading(heading);
-        }
-        if (p.dates) {
-          addText(p.dates, 80, 0);
-        }
-        if (p.description) addText(p.description, 100, 0);
-        if (Array.isArray(p.technologies) && p.technologies.length > 0) {
-          children.push(new Paragraph({
-            spacing: { after: style.docx.bodyAfter },
-            children: [
-              new TextRun({ text: 'Technologies: ', font: style.docx.font || 'Calibri', size: bodySizeDocx, bold: true, color: style.docx.bodyColor || undefined }),
-              new TextRun({ text: p.technologies.join(', '), font: style.docx.font || 'Calibri', size: bodySizeDocx, color: style.docx.bodyColor || undefined })
-            ],
-          }));
-        }
-      });
-    } else if (typeof projects === 'string') {
-      addText(projects, style.docx.bodyAfter);
+  // Projects (skip if one-page constraint to save space)
+  if (!limitToOnePage) {
+    const projects = parsed.projects;
+    if (projects) {
+      addHeading('Projects');
+      if (Array.isArray(projects)) {
+        projects.forEach((p) => {
+          if (!p || typeof p !== 'object') return;
+          const heading = [p.name, p.organization].filter(Boolean).join(' — ');
+          if (heading) {
+            addSubheading(heading);
+          }
+          if (p.dates) {
+            addText(p.dates, 80, 0);
+          }
+          if (p.description) addText(p.description, 100, 0);
+          if (Array.isArray(p.technologies) && p.technologies.length > 0) {
+            children.push(new Paragraph({
+              spacing: { after: spacing.bodyAfter },
+              children: [
+                new TextRun({ text: 'Technologies: ', font: style.docx.font || 'Calibri', size: bodySizeDocx, bold: true, color: style.docx.bodyColor || undefined }),
+                new TextRun({ text: p.technologies.join(', '), font: style.docx.font || 'Calibri', size: bodySizeDocx, color: style.docx.bodyColor || undefined })
+              ],
+            }));
+          }
+        });
+      } else if (typeof projects === 'string') {
+        addText(projects, spacing.bodyAfter);
+      }
     }
   }
 
@@ -692,7 +790,7 @@ async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'clas
 }
 
 // Build DOCX cover letter
-async function buildCoverDocx(parsed = {}, templateKey = 'classic', cover = {}) {
+async function buildCoverDocx(parsed = {}, templateKey = 'classic', cover = {}, limitToOnePage = false) {
   const style = getTemplate(templateKey);
   const layout = style.layout || 'traditional';
   const children = [];
@@ -704,7 +802,14 @@ async function buildCoverDocx(parsed = {}, templateKey = 'classic', cover = {}) 
   const titleSizeDocx = Math.round(style.pdf.titleSize * 2);
   const bodySizeDocx = Math.round(style.pdf.bodySize * 2);
 
-  const addText = (text, spacingAfter = style.docx.bodyAfter) => {
+  // Adjust spacing for one-page constraint
+  const spacing = limitToOnePage ? {
+    titleAfter: style.docx.titleAfter ? Math.floor(style.docx.titleAfter * 0.6) : 60,
+    contactAfter: style.docx.contactAfter ? Math.floor(style.docx.contactAfter * 0.6) : 60,
+    bodyAfter: style.docx.bodyAfter ? Math.floor(style.docx.bodyAfter * 0.6) : 60,
+  } : style.docx;
+
+  const addText = (text, spacingAfter = spacing.bodyAfter) => {
     if (!text) return;
     children.push(new Paragraph({
       spacing: { after: spacingAfter },
@@ -715,38 +820,38 @@ async function buildCoverDocx(parsed = {}, templateKey = 'classic', cover = {}) 
   // Header
   children.push(new Paragraph({
     heading: HeadingLevel.TITLE,
-    spacing: { after: style.docx.titleAfter },
+    spacing: { after: spacing.titleAfter },
     alignment: titleAlignment,
     children: [new TextRun({ text: name, font: style.docx.headingFont || style.docx.font || 'Calibri', bold: true, size: titleSizeDocx, color: style.docx.titleColor || undefined })],
   }));
   if (contact) {
-    children.push(new Paragraph({ spacing: { after: style.docx.contactAfter }, alignment: titleAlignment, children: [new TextRun({ text: contact, font: style.docx.font || 'Calibri', size: bodySizeDocx, color: style.docx.contactColor || undefined })] }));
+    children.push(new Paragraph({ spacing: { after: spacing.contactAfter }, alignment: titleAlignment, children: [new TextRun({ text: contact, font: style.docx.font || 'Calibri', size: bodySizeDocx, color: style.docx.contactColor || undefined })] }));
   }
 
   // Date
   const dateText = cover.date || new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-  addText(dateText, style.docx.bodyAfter);
+  addText(dateText, spacing.bodyAfter);
 
   // Recipient block
   const recipientLines = [cover.recipientName, cover.recipientTitle, cover.company, cover.address1, cover.address2].filter(Boolean);
-  recipientLines.forEach(line => addText(line, 80));
+  recipientLines.forEach(line => addText(line, limitToOnePage ? 40 : 80));
 
   // Greeting
-  addText(cover.greeting || 'Dear Hiring Manager,', style.docx.bodyAfter);
+  addText(cover.greeting || 'Dear Hiring Manager,', spacing.bodyAfter);
 
   // Body paragraphs
   const body = (cover.body || '').trim();
   if (body.length > 0) {
     // Replace escaped newlines (\n) with actual newlines, then split by newlines
     const cleanedBody = body.replace(/\\n/g, '\n');
-    cleanedBody.split(/\n+/).filter(p => p.trim().length > 0).forEach(p => addText(p.trim(), style.docx.bodyAfter));
+    cleanedBody.split(/\n+/).filter(p => p.trim().length > 0).forEach(p => addText(p.trim(), spacing.bodyAfter));
   } else if (parsed.summary) {
-    addText(parsed.summary, style.docx.bodyAfter);
+    addText(parsed.summary, spacing.bodyAfter);
   }
 
   // Closing
-  addText(cover.closing || 'Sincerely,', 120);
-  addText(name, style.docx.bodyAfter);
+  addText(cover.closing || 'Sincerely,', limitToOnePage ? 80 : 120);
+  addText(name, spacing.bodyAfter);
 
   const doc = new Document({ sections: [{ children }] });
   return Packer.toBuffer(doc);
@@ -762,18 +867,38 @@ app.post('/api/upload', upload.single('resume'), async (req, res) => {
     }
 
     const jobDescription = (req.body?.jobDescription || '').trim();
+    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
+    const generateResume = req.body?.generateResume === 'true' || req.body?.generateResume === true;
+    const generateCoverLetter = req.body?.generateCoverLetter === 'true' || req.body?.generateCoverLetter === true;
 
     filePath = req.file.path;
     console.log(`Processing file: ${req.file.originalname}`);
+    console.log(`File size: ${req.file.size} bytes`);
+    console.log(`File MIME type: ${req.file.mimetype}`);
+    console.log(`File path: ${filePath}`);
+
+    // Verify file exists and has content
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`File was not saved to disk at ${filePath}`);
+    }
+
+    const fileStats = fs.statSync(filePath);
+    console.log(`File stats - size: ${fileStats.size}, isFile: ${fileStats.isFile()}`);
+
+    if (fileStats.size === 0) {
+      throw new Error('Uploaded file is empty (0 bytes). Please upload a valid resume file.');
+    }
 
     // Extract text from the resume
+    console.log(`Extracting text from ${req.file.mimetype}...`);
     const resumeText = await extractText(filePath, req.file.mimetype);
     
     if (!resumeText || resumeText.trim().length === 0) {
-      throw new Error('Could not extract text from the file. The file may be empty or corrupted.');
+      throw new Error('Could not extract text from the file. The file may be empty, corrupted, or in an unsupported format.');
     }
 
-    console.log('Text extracted, sending to Gemini...');
+    console.log(`Text extracted successfully (${resumeText.length} characters)`);
+    console.log('Text extraction complete, sending to Gemini...');
 
     // Parse with Gemini
     const parsedResume = await parseResumeWithGemini(resumeText);
@@ -781,10 +906,16 @@ app.post('/api/upload', upload.single('resume'), async (req, res) => {
     let tailoredResume = null;
     let coverLetter = null;
     if (jobDescription.length > 0) {
-      console.log('Tailoring resume to job description...');
-      tailoredResume = await tailorResumeWithGemini(parsedResume, jobDescription);
-      console.log('Generating cover letter...');
-      coverLetter = await generateCoverLetterWithGemini(parsedResume, jobDescription);
+      // Only tailor resume if generateResume flag is true
+      if (generateResume) {
+        console.log(`Tailoring resume to job description${limitToOnePage ? ' (one-page limit)' : ''}...`);
+        tailoredResume = await tailorResumeWithGemini(parsedResume, jobDescription, limitToOnePage);
+      }
+      // Only generate cover letter if generateCoverLetter flag is true
+      if (generateCoverLetter) {
+        console.log(`Generating cover letter${limitToOnePage ? ' (one-page limit)' : ''}...`);
+        coverLetter = await generateCoverLetterWithGemini(parsedResume, jobDescription, limitToOnePage);
+      }
     }
 
     console.log('Resume parsed successfully');
@@ -844,10 +975,132 @@ app.post('/api/upload', upload.single('resume'), async (req, res) => {
   }
 });
 
+app.post('/api/infer-job-title', async (req, res) => {
+  try {
+    const description = (req.body?.description || '').trim();
+    if (!description) {
+      return res.status(400).json({ success: false, error: 'Missing job description.' });
+    }
+
+    const title = await inferJobTitleWithGemini(description);
+    return res.json({ success: true, title });
+  } catch (error) {
+    console.error('Error inferring job title:', error);
+    return res.status(500).json({ success: false, error: 'Failed to infer job title.' });
+  }
+});
+
+// Validate job description quality - only reject in extreme situations
+function validateJobDescription(jobDescription) {
+  const minLength = 50; // Minimum reasonable job description length
+  const maxLength = 50000; // Prevent API overload
+  
+  // Check length
+  if (jobDescription.length < minLength) {
+    return { 
+      valid: false, 
+      error: 'Job description is too short. Please provide a more detailed job description (at least 50 characters).' 
+    };
+  }
+  
+  if (jobDescription.length > maxLength) {
+    return { 
+      valid: false, 
+      error: 'Job description is too long. Please limit to 50,000 characters.' 
+    };
+  }
+  
+  // Check for gibberish (too many repeated characters - extreme cases)
+  const repeatedCharPattern = /(.)(\1){9,}/g; // 10+ consecutive same character
+  if (repeatedCharPattern.test(jobDescription)) {
+    return { 
+      valid: false, 
+      error: 'Job description appears invalid. Please provide a legitimate job description without excessive repeated characters.' 
+    };
+  }
+  
+  // Check for minimum meaningful words
+  const words = jobDescription.trim().split(/\s+/).filter(w => w.length > 2);
+  if (words.length < 10) {
+    return { 
+      valid: false, 
+      error: 'Job description lacks sufficient content. Please provide a more complete job description with at least 10 meaningful words.' 
+    };
+  }
+  
+  return { valid: true };
+}
+
+// Tailor endpoint - for tailoring already-parsed resume to job descriptions
+app.post('/api/tailor', async (req, res) => {
+  try {
+    const parsed = req.body?.parsed;
+    const jobDescription = (req.body?.jobDescription || '').trim();
+    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
+    const generateResume = req.body?.generateResume === 'true' || req.body?.generateResume === true;
+    const generateCoverLetter = req.body?.generateCoverLetter === 'true' || req.body?.generateCoverLetter === true;
+
+    console.log(`[/api/tailor] Received request`);
+    console.log(`  generateResume: ${generateResume}`);
+    console.log(`  generateCoverLetter: ${generateCoverLetter}`);
+    console.log(`  limitToOnePage: ${limitToOnePage}`);
+    console.log(`  jobDescription length: ${jobDescription.length}`);
+
+    if (!parsed || typeof parsed !== 'object') {
+      return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
+    }
+
+    if (!jobDescription) {
+      return res.status(400).json({ success: false, error: 'Missing job description.' });
+    }
+
+    // Validate job description quality - only reject in extreme cases
+    const jobDescValidation = validateJobDescription(jobDescription);
+    if (!jobDescValidation.valid) {
+      return res.status(400).json({ success: false, error: jobDescValidation.error });
+    }
+
+    let tailoredResume = null;
+    let coverLetter = null;
+
+    // Only tailor resume if generateResume flag is true
+    if (generateResume) {
+      console.log(`[/api/tailor] Starting resume tailoring...`);
+      tailoredResume = await tailorResumeWithGemini(parsed, jobDescription, limitToOnePage);
+      console.log(`[/api/tailor] Resume tailoring complete`);
+    } else {
+      console.log(`[/api/tailor] Skipping resume tailoring (generateResume=false)`);
+    }
+
+    // Only generate cover letter if generateCoverLetter flag is true
+    if (generateCoverLetter) {
+      console.log(`[/api/tailor] Starting cover letter generation...`);
+      coverLetter = await generateCoverLetterWithGemini(parsed, jobDescription, limitToOnePage);
+      console.log(`[/api/tailor] Cover letter generation complete`);
+    } else {
+      console.log(`[/api/tailor] Skipping cover letter generation (generateCoverLetter=false)`);
+    }
+
+    console.log(`[/api/tailor] Sending response with success=true`);
+    res.json({
+      success: true,
+      tailored: tailoredResume || null,
+      coverLetter: coverLetter || null
+    });
+  } catch (error) {
+    console.error('[/api/tailor] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to tailor resume.'
+    });
+  }
+});
+
 app.post('/api/export-pdf', async (req, res) => {
   try {
     const parsed = req.body?.parsed;
     const tailored = req.body?.tailored || null;
+    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
 
     if (!parsed || typeof parsed !== 'object') {
       return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
@@ -860,7 +1113,8 @@ app.post('/api/export-pdf', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename="resume.pdf"');
     doc.pipe(res);
 
-    buildResumePdf(doc, parsed, tailored, templateKey);
+    // Generate DOCX first for consistency, then PDF mirrors it (if needed)
+    buildResumePdf(doc, parsed, tailored, templateKey, limitToOnePage);
 
     doc.end();
   } catch (error) {
@@ -873,6 +1127,7 @@ app.post('/api/export-pdf-cover', async (req, res) => {
   try {
     const parsed = req.body?.parsed;
     const cover = req.body?.cover || {};
+    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
 
     if (!parsed || typeof parsed !== 'object') {
       return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
@@ -885,7 +1140,7 @@ app.post('/api/export-pdf-cover', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename="cover-letter.pdf"');
     doc.pipe(res);
 
-    buildCoverPdf(doc, parsed, templateKey, cover);
+    buildCoverPdf(doc, parsed, templateKey, cover, limitToOnePage);
 
     doc.end();
   } catch (error) {
@@ -898,13 +1153,14 @@ app.post('/api/export-docx', async (req, res) => {
   try {
     const parsed = req.body?.parsed;
     const tailored = req.body?.tailored || null;
+    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
 
     if (!parsed || typeof parsed !== 'object') {
       return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
     }
 
     const templateKey = req.body?.templateKey || 'classic';
-    const buffer = await buildResumeDocx(parsed, tailored, templateKey);
+    const buffer = await buildResumeDocx(parsed, tailored, templateKey, limitToOnePage);
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', 'attachment; filename="resume.docx"');
@@ -919,13 +1175,14 @@ app.post('/api/export-docx-cover', async (req, res) => {
   try {
     const parsed = req.body?.parsed;
     const cover = req.body?.cover || {};
+    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
 
     if (!parsed || typeof parsed !== 'object') {
       return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
     }
 
     const templateKey = req.body?.templateKey || 'classic';
-    const buffer = await buildCoverDocx(parsed, templateKey, cover);
+    const buffer = await buildCoverDocx(parsed, templateKey, cover, limitToOnePage);
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', 'attachment; filename="cover-letter.docx"');
