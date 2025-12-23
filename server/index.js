@@ -57,7 +57,14 @@ process.on('uncaughtException', (error) => {
 });
 
 // Initialize Gemini AI
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+let genAI;
+try {
+  genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  console.log('✓ Gemini API initialized');
+} catch (error) {
+  console.error('❌ Failed to initialize Gemini API:', error.message);
+  process.exit(1);
+}
 
 async function inferJobTitleWithGemini(jobDescription) {
   const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
