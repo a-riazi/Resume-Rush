@@ -1063,20 +1063,20 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                         
                         {job.results.tailored && (
                           <>
-                            <button onClick={() => handlePreviewResume(job.id)} className="btn-secondary" disabled={downloading}>
+                            <button onClick={() => handlePreviewResume(job.id)} className="btn-secondary btn-preview" disabled={downloading}>
                               {downloading && previewJobId === job.id ? 'Preparing...' : 'Preview Resume PDF'}
                             </button>
-                            <button onClick={() => handleDownloadResumeDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
+                            <button onClick={() => handleDownloadResumeDocx(job.id)} className="btn-secondary btn-docx" disabled={docxDownloading}>
                               {docxDownloading ? 'Preparing...' : 'Download Resume DOCX'}
                             </button>
                           </>
                         )}
                         {job.results.coverLetter && (
                           <>
-                            <button onClick={() => handlePreviewCover(job.id)} className="btn-secondary" disabled={downloading}>
+                            <button onClick={() => handlePreviewCover(job.id)} className="btn-secondary btn-preview" disabled={downloading}>
                               {downloading && previewJobId === job.id ? 'Preparing...' : 'Preview Cover Letter PDF'}
                             </button>
-                            <button onClick={() => handleDownloadCoverDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
+                            <button onClick={() => handleDownloadCoverDocx(job.id)} className="btn-secondary btn-docx" disabled={docxDownloading}>
                               {docxDownloading ? 'Preparing...' : 'Download Cover Letter DOCX'}
                             </button>
                           </>

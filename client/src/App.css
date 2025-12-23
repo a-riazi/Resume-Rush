@@ -1509,28 +1509,53 @@
 }
 
 /* Preview buttons get unique purple/violet hue */
-.job-action-buttons .btn-secondary {
+.job-action-buttons .btn-preview {
   background: #f5f3ff;
   color: #7c3aed;
   border: 2px solid #7c3aed;
 }
 
-.job-action-buttons .btn-secondary:hover {
+.job-action-buttons .btn-preview:hover {
   background: #7c3aed;
   color: #ffffff;
   box-shadow: 0 8px 20px rgba(124, 58, 237, 0.3);
 }
 
-.dark-mode .job-action-buttons .btn-secondary {
+.dark-mode .job-action-buttons .btn-preview {
   background: #1e1433;
   color: #c4b5fd;
   border: 2px solid #8b5cf6;
 }
 
-.dark-mode .job-action-buttons .btn-secondary:hover {
+.dark-mode .job-action-buttons .btn-preview:hover {
   background: rgba(139, 92, 246, 0.15);
   color: #ddd6fe;
   border-color: #a78bfa;
+}
+
+/* DOCX download buttons get unique teal/cyan hue */
+.job-action-buttons .btn-docx {
+  background: #f0fdfa;
+  color: #0d9488;
+  border: 2px solid #14b8a6;
+}
+
+.job-action-buttons .btn-docx:hover {
+  background: #14b8a6;
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(20, 184, 166, 0.3);
+}
+
+.dark-mode .job-action-buttons .btn-docx {
+  background: #0f1f1e;
+  color: #5eead4;
+  border: 2px solid #2dd4bf;
+}
+
+.dark-mode .job-action-buttons .btn-docx:hover {
+  background: rgba(45, 212, 191, 0.15);
+  color: #99f6e4;
+  border-color: #5eead4;
 }
 
 .faq-list {
