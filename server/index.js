@@ -17,7 +17,33 @@ const PORT = process.env.PORT || 5000;
 
 
 // Middleware
-app.use(cors({ origin: 'https://resumerush.io', credentials: true }))
+const allowedOrigins = [
+  'https://resumerush.io',
+  'https://www.resumerush.io',
+  // Allow default Railway preview domain if accessed directly
+  // Add your Vercel preview domains here if needed
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow non-browser requests (like curl) which have no origin
+    if (!origin) return callback(null, true);
+    // Allow our primary domains
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Allow common preview domains (Vercel, Railway)
+    if (origin.endsWith('.vercel.app') || origin.endsWith('.railway.app')) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
+// Explicitly handle preflight for all routes
+app.options('*', cors(corsOptions));
 app.use(compression());
 app.use(express.json());
 
