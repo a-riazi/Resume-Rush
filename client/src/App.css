@@ -637,6 +637,16 @@
   margin: 0;
 }
 
+/* Dark mode error messages */
+.dark-mode .error-message {
+  background: #3d1414;
+  border-left: 4px solid #ef4444;
+}
+
+.dark-mode .error-message p {
+  color: #fca5a5;
+}
+
 /* Results Section */
 .results-section {
   background: #f7faff;
@@ -1498,6 +1508,31 @@
   font-size: 0.95rem;
 }
 
+/* Preview buttons get unique purple/violet hue */
+.job-action-buttons .btn-secondary {
+  background: #f5f3ff;
+  color: #7c3aed;
+  border: 2px solid #7c3aed;
+}
+
+.job-action-buttons .btn-secondary:hover {
+  background: #7c3aed;
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(124, 58, 237, 0.3);
+}
+
+.dark-mode .job-action-buttons .btn-secondary {
+  background: #1e1433;
+  color: #c4b5fd;
+  border: 2px solid #8b5cf6;
+}
+
+.dark-mode .job-action-buttons .btn-secondary:hover {
+  background: rgba(139, 92, 246, 0.15);
+  color: #ddd6fe;
+  border-color: #a78bfa;
+}
+
 .faq-list {
   margin-top: 1.5rem;
 }
@@ -1567,6 +1602,12 @@
   background: #fee2e2;
   border: 1px solid #fca5a5;
   color: #dc2626;
+}
+
+.dark-mode .job-result-block .result-card.error {
+  background: #3d1414;
+  border: 1px solid #7f1d1d;
+  color: #fca5a5;
 }
 
 .job-result-block .result-card:last-child {

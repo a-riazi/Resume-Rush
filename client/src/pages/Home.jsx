@@ -1066,9 +1066,6 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                             <button onClick={() => handlePreviewResume(job.id)} className="btn-secondary" disabled={downloading}>
                               {downloading && previewJobId === job.id ? 'Preparing...' : 'Preview Resume PDF'}
                             </button>
-                            <button onClick={() => handleDownloadResumePdf(job.id)} className="btn-secondary" disabled={downloading}>
-                              {downloading && previewJobId === job.id ? 'Downloading...' : 'Download Resume PDF'}
-                            </button>
                             <button onClick={() => handleDownloadResumeDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
                               {docxDownloading ? 'Preparing...' : 'Download Resume DOCX'}
                             </button>
@@ -1078,9 +1075,6 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                           <>
                             <button onClick={() => handlePreviewCover(job.id)} className="btn-secondary" disabled={downloading}>
                               {downloading && previewJobId === job.id ? 'Preparing...' : 'Preview Cover Letter PDF'}
-                            </button>
-                            <button onClick={() => handleDownloadCoverPdf(job.id)} className="btn-secondary" disabled={downloading}>
-                              {downloading && previewJobId === job.id ? 'Downloading...' : 'Download Cover Letter PDF'}
                             </button>
                             <button onClick={() => handleDownloadCoverDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
                               {docxDownloading ? 'Preparing...' : 'Download Cover Letter DOCX'}
