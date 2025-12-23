@@ -1211,8 +1211,13 @@ app.post('/api/export-docx-cover', async (req, res) => {
 
 // Proofread endpoint
 
-// Health check endpoint
+// Health check endpoints (for Railway and general use)
 app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Resume Rocket API is running' });
+});
+
+// Railway default health check path
+app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Resume Rocket API is running' });
 });
 
