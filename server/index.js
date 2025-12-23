@@ -93,13 +93,15 @@ try {
 
 async function inferJobTitleWithGemini(jobDescription) {
   const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
-  const prompt = `Infer a concise, professional job title (2-3 words) based on the job description below. Return ONLY the title text, no quotes, no punctuation, no extra words.\n\nJob description:\n${jobDescription}\n\nReturn just the inferred job title:`;
+  const prompt = `Extract the job title and company name from the job description below. Return in the format: "Job Title at Company Name" (e.g., "Software Engineer at Google"). If no company is mentioned, return just the job title. Be concise (5-7 words max).\n\nJob description:\n${jobDescription}\n\nReturn the job title with company:`;
 
   const result = await model.generateContent(prompt);
   const text = result.response.text().trim();
-  const cleaned = text.replace(/[\n\r]+/g, ' ').replace(/[^\w\s&\-\/]/g, '').trim();
-  const words = cleaned.split(/\s+/).filter(Boolean).slice(0, 3);
-  return words.join(' ') || 'Role';
+  // Clean up the response - remove quotes, extra punctuation
+  const cleaned = text.replace(/^["']|["']$/g, '').replace(/[\n\r]+/g, ' ').trim();
+  // Limit to reasonable length
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  return words.slice(0, 7).join(' ') || 'Role';
 }
 
 // Extract text from PDF

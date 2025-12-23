@@ -483,6 +483,16 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     const activeJob = jobDescriptions.find(j => j.id === jobId)
     if (!activeJob || !activeJob.results.tailored) return
     
+    // Clear any existing previews first
+    if (pdfUrl) {
+      window.URL.revokeObjectURL(pdfUrl)
+      setPdfUrl(null)
+    }
+    if (coverPdfUrl) {
+      window.URL.revokeObjectURL(coverPdfUrl)
+      setCoverPdfUrl(null)
+    }
+    
     setDownloading(true)
     setError(null)
     setPreviewLabel(`${activeJob.title ? activeJob.title : 'Job'} · Resume`)
@@ -511,6 +521,16 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     if (!result) return
     const activeJob = jobDescriptions.find(j => j.id === jobId)
     if (!activeJob || !activeJob.results.coverLetter) return
+    
+    // Clear any existing previews first
+    if (pdfUrl) {
+      window.URL.revokeObjectURL(pdfUrl)
+      setPdfUrl(null)
+    }
+    if (coverPdfUrl) {
+      window.URL.revokeObjectURL(coverPdfUrl)
+      setCoverPdfUrl(null)
+    }
     
     setDownloading(true)
     setError(null)
@@ -605,7 +625,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      const filename = activeJob.title ? `resume-${activeJob.title.replace(/\s+/g, '-').toLowerCase()}.docx` : 'resume.docx'
+      const filename = activeJob.title ? `${activeJob.title.replace(/\s+/g, '-').toLowerCase()}-resume.docx` : 'resume.docx'
       link.setAttribute('download', filename)
       document.body.appendChild(link)
       link.click()
@@ -643,7 +663,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      const filename = activeJob.title ? `cover-letter-${activeJob.title.replace(/\s+/g, '-').toLowerCase()}.docx` : 'cover-letter.docx'
+      const filename = activeJob.title ? `${activeJob.title.replace(/\s+/g, '-').toLowerCase()}-cover-letter.docx` : 'cover-letter.docx'
       link.setAttribute('download', filename)
       document.body.appendChild(link)
       link.click()
@@ -654,6 +674,92 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
       setError('Failed to download cover letter DOCX. Please try again.')
     } finally {
       setDocxDownloading(false)
+    }
+  }
+
+  const handleDownloadResumePdf = async (jobId) => {
+    if (!result) return
+    const activeJob = jobDescriptions.find(j => j.id === jobId)
+    if (!activeJob || !activeJob.results.tailored) return
+    
+    setDownloading(true)
+    setError(null)
+    try {
+      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey, limitToOnePage }
+      const response = await axios.post(`${API_BASE_URL}/api/export-pdf`, payload, {
+        responseType: 'blob',
+      })
+
+      const blob = new Blob([response.data], { type: 'application/pdf' })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      const filename = activeJob.title ? `${activeJob.title.replace(/\s+/g, '-').toLowerCase()}-resume.pdf` : 'resume.pdf'
+      link.setAttribute('download', filename)
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('PDF download error:', err)
+      setError('Failed to download resume PDF. Please try again.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handleDownloadCoverPdf = async (jobId) => {
+    if (!result) return
+    const activeJob = jobDescriptions.find(j => j.id === jobId)
+    if (!activeJob || !activeJob.results.coverLetter) return
+    
+    setDownloading(true)
+    setError(null)
+    try {
+      const coverPayload = { 
+        parsed: result, 
+        templateKey,
+        limitToOnePage,
+        cover: {
+          body: activeJob.results.coverLetter,
+        }
+      }
+      const response = await axios.post(`${API_BASE_URL}/api/export-pdf-cover`, coverPayload, {
+        responseType: 'blob',
+      })
+
+      const blob = new Blob([response.data], { type: 'application/pdf' })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      const filename = activeJob.title ? `${activeJob.title.replace(/\s+/g, '-').toLowerCase()}-cover-letter.pdf` : 'cover-letter.pdf'
+      link.setAttribute('download', filename)
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Cover PDF download error:', err)
+      setError('Failed to download cover letter PDF. Please try again.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handleDownloadAllPdfs = async (jobId) => {
+    const activeJob = jobDescriptions.find(j => j.id === jobId)
+    if (!activeJob) return
+
+    // Download resume if available
+    if (activeJob.results.tailored) {
+      await handleDownloadResumePdf(jobId)
+      // Small delay to avoid overwhelming the server
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+
+    // Download cover letter if available
+    if (activeJob.results.coverLetter) {
+      await handleDownloadCoverPdf(jobId)
     }
   }
 
@@ -949,10 +1055,19 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                       )}
 
                       <div className="job-action-buttons">
+                        {(job.results.tailored || job.results.coverLetter) && (
+                          <button onClick={() => handleDownloadAllPdfs(job.id)} className="btn-primary" disabled={downloading}>
+                            {downloading && previewJobId === job.id ? 'Downloading...' : 'Download All PDFs'}
+                          </button>
+                        )}
+                        
                         {job.results.tailored && (
                           <>
-                            <button onClick={() => handlePreviewResume(job.id)} className="btn-primary" disabled={downloading}>
-                              {downloading ? 'Preparing...' : 'Preview Resume PDF'}
+                            <button onClick={() => handlePreviewResume(job.id)} className="btn-secondary" disabled={downloading}>
+                              {downloading && previewJobId === job.id ? 'Preparing...' : 'Preview Resume PDF'}
+                            </button>
+                            <button onClick={() => handleDownloadResumePdf(job.id)} className="btn-secondary" disabled={downloading}>
+                              {downloading && previewJobId === job.id ? 'Downloading...' : 'Download Resume PDF'}
                             </button>
                             <button onClick={() => handleDownloadResumeDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
                               {docxDownloading ? 'Preparing...' : 'Download Resume DOCX'}
@@ -961,8 +1076,11 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                         )}
                         {job.results.coverLetter && (
                           <>
-                            <button onClick={() => handlePreviewCover(job.id)} className="btn-primary" disabled={downloading}>
-                              {downloading ? 'Preparing...' : 'Preview Cover Letter PDF'}
+                            <button onClick={() => handlePreviewCover(job.id)} className="btn-secondary" disabled={downloading}>
+                              {downloading && previewJobId === job.id ? 'Preparing...' : 'Preview Cover Letter PDF'}
+                            </button>
+                            <button onClick={() => handleDownloadCoverPdf(job.id)} className="btn-secondary" disabled={downloading}>
+                              {downloading && previewJobId === job.id ? 'Downloading...' : 'Download Cover Letter PDF'}
                             </button>
                             <button onClick={() => handleDownloadCoverDocx(job.id)} className="btn-secondary" disabled={docxDownloading}>
                               {docxDownloading ? 'Preparing...' : 'Download Cover Letter DOCX'}
