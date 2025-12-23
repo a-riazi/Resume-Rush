@@ -15,6 +15,7 @@ const { templates, templateKeys, getTemplate } = require('./templates');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+
 // Middleware
 app.use(cors({ origin: 'https://resumerush.io', credentials: true }))
 app.use(compression());
