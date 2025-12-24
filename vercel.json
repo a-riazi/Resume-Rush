@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "www.resumerush.io" }],
+      "destination": "https://resumerush.io/$1",
+      "permanent": true
+    }
+  ]
+}

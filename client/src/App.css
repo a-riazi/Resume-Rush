@@ -299,6 +299,16 @@
   font-size: 1.5rem;
 }
 
+/* Dark mode: ensure upload headings and helper text are readable */
+.dark-mode .upload-area h3 {
+  color: #e7e8ff;
+}
+
+.dark-mode .upload-area p,
+.dark-mode .upload-area .file-types {
+  color: #c7c8ff;
+}
+
 .upload-preview-card {
   background: #f7faff;
   border: 1px solid #d7e6ff;

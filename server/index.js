@@ -15,7 +15,6 @@ const { templates, templateKeys, getTemplate } = require('./templates');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-
 // Middleware
 const allowedOrigins = [
   'https://resumerush.io',
