@@ -585,10 +585,21 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
   }
 
   const handleDownloadFromPreview = () => {
-    if (!pdfUrl) return
+    // Determine which preview is active and download the correct one
+    const url = activePreviewTab === 'cover' ? coverPdfUrl : pdfUrl
+    if (!url) return
+    
     const link = document.createElement('a')
-    link.href = pdfUrl
-    link.setAttribute('download', 'resume-preview.pdf')
+    link.href = url
+    
+    // Get filename from previewJobId if available
+    const activeJob = previewJobId ? jobDescriptions.find(j => j.id === previewJobId) : null
+    const jobTitle = activeJob?.title ? activeJob.title.replace(/\s+/g, '-').toLowerCase() : 'preview'
+    const filename = activePreviewTab === 'cover' 
+      ? `${jobTitle}-cover-letter.pdf` 
+      : `${jobTitle}-resume.pdf`
+    
+    link.setAttribute('download', filename)
     document.body.appendChild(link)
     link.click()
     link.remove()
