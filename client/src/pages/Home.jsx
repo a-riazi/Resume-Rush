@@ -1325,12 +1325,6 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                 </div>
               </div>
               <div className="modal-body">
-                {/* Ad Unit - Bottom of Page (before modal) */}
-                {jobDescriptions.some(j => j.results.tailored || j.results.coverLetter) && !showModal && (
-                  <div style={{ margin: '40px 0' }}>
-                    <AdUnit slot="1678163652" format="horizontal" />
-                  </div>
-                )}
                 <iframe 
                   src={activePreviewTab === 'resume' ? pdfUrl : coverPdfUrl} 
                   title={activePreviewTab === 'resume' ? 'Resume Preview' : 'Cover Letter Preview'} 
