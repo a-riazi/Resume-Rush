@@ -6,6 +6,9 @@ import AdUnit from '../components/AdUnit'
 // Base API URL comes from environment; falls back to same-origin
 const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
+// Maximum number of job descriptions allowed (configurable for API limits)
+const MAX_JOB_DESCRIPTIONS = 3
+
 const templateOptions = [
   { key: 'classic', label: 'Classic', accent: '#111', heading: '#111', body: '#222', bg: '#f4f2ec' },
   { key: 'modern', label: 'Modern Accent', accent: '#0f766e', heading: '#0b4f4a', body: '#1f1b16', bg: '#e8f5f3' },
@@ -277,6 +280,10 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
   }
 
   const addNewJobDescription = () => {
+    if (jobDescriptions.length >= MAX_JOB_DESCRIPTIONS) {
+      alert(`Maximum of ${MAX_JOB_DESCRIPTIONS} job descriptions allowed to manage API usage.`)
+      return
+    }
     setJobDescriptions([...jobDescriptions, { id: Date.now(), title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }])
   }
 
@@ -992,7 +999,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
             <div className="results-header">
               <h2>{generateResume && generateCoverLetter ? '✓ Tailored Resumes & Cover Letters Ready' : generateCoverLetter ? '✓ Tailored Cover Letters Ready' : '✓ Tailored Resumes Ready'}</h2>
               <div className="results-actions">
-                {jobDescriptions.length < 2 && (
+                {jobDescriptions.length < MAX_JOB_DESCRIPTIONS && (
                   <div className="template-picker">
                     <label htmlFor="template-select">Template</label>
                     <select
