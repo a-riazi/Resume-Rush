@@ -1029,7 +1029,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
             </div>
 
             {/* Ad Unit - Top of Results */}
-            {results.length > 0 && (
+            {jobDescriptions.some(j => j.results.tailored || j.results.coverLetter) && (
               <div style={{ gridColumn: '1 / -1', margin: '20px 0' }}>
                 <AdUnit slot="1678163652" />
               </div>
@@ -1297,7 +1297,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
             </div>
 
             {/* Ad Unit - Bottom of Page */}
-            {results.length > 0 && (
+            {jobDescriptions.some(j => j.results.tailored || j.results.coverLetter) && (
               <div style={{ margin: '40px 0', textAlign: 'center' }}>
                 <AdUnit slot="1678163652" format="horizontal" />
               </div>
@@ -1326,9 +1326,9 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
               </div>
               <div className="modal-body">
                 {/* Ad Unit - Bottom of Page (before modal) */}
-                {results.length > 0 && !showModal && (
+                {jobDescriptions.some(j => j.results.tailored || j.results.coverLetter) && !showModal && (
                   <div style={{ margin: '40px 0' }}>
-                    <AdUnit slot="REPLACE_WITH_SLOT_ID_3" format="horizontal" />
+                    <AdUnit slot="1678163652" format="horizontal" />
                   </div>
                 )}
                 <iframe 
