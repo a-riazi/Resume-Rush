@@ -91,7 +91,7 @@ try {
 }
 
 async function inferJobTitleWithGemini(jobDescription) {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
   const prompt = `Extract the job title and company name from the job description below. Return in the format: "Job Title at Company Name" (e.g., "Software Engineer at Google"). If no company is mentioned, return just the job title. Be concise (5-7 words max).\n\nJob description:\n${jobDescription}\n\nReturn the job title with company:`;
 
   const result = await model.generateContent(prompt);
@@ -175,7 +175,7 @@ async function extractText(filePath, mimetype) {
 // Parse resume with Gemini
 async function parseResumeWithGemini(resumeText) {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
     
     const prompt = `You are a resume parser. Analyze the following resume text and extract structured information. Return ONLY valid JSON with no markdown formatting, no code blocks, and no additional text.
 
@@ -237,7 +237,7 @@ Return a JSON object with this exact structure:
 async function tailorResumeWithGemini(parsedResume, jobDescription, limitToOnePage = false) {
   try {
     console.log('[tailorResumeWithGemini] Starting...');
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
 
     const onePageConstraint = limitToOnePage 
       ? '\n\n⚠️ CRITICAL: The resume MUST fit on ONE PAGE. Maximize content density. Reduce descriptions to 1-2 lines max. Limit each role to 2-3 bullet points max. Eliminate any section that is not essential. Combine skills inline where possible.'
@@ -307,7 +307,7 @@ Rules:
 async function generateCoverLetterWithGemini(parsedResume, jobDescription, limitToOnePage = false) {
   try {
     console.log('[generateCoverLetterWithGemini] Starting...');
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
     
     const resumeSummary = `
 Name: ${parsedResume.name || 'N/A'}
