@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import '../styles/Navigation.css'
+import AdsTxtStatus from './AdsTxtStatus'
 
 export default function Navigation({ darkMode = false, onToggleDarkMode = () => {} }) {
   return (
@@ -17,6 +18,7 @@ export default function Navigation({ darkMode = false, onToggleDarkMode = () => 
             <li><Link to="/privacy" className="nav-link">Privacy</Link></li>
             <li><Link to="/terms" className="nav-link">Terms</Link></li>
           </ul>
+          <AdsTxtStatus />
           <button
             type="button"
             className="nav-toggle"

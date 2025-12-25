@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
 import '../App.css'
+import AdUnit from '../components/AdUnit'
 
 // Base API URL comes from environment; falls back to same-origin
 const API_BASE_URL = import.meta.env.VITE_API_URL || ''
@@ -1020,6 +1021,13 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
               </div>
             </div>
 
+            {/* Ad Unit - Top of Results */}
+            {results.length > 0 && (
+              <div style={{ gridColumn: '1 / -1', margin: '20px 0' }}>
+                <AdUnit slot="1678163652" />
+              </div>
+            )}
+
             <div className="results-grid">
                 {loading && (
                   <div className="loading-spinner-wrapper" style={{ gridColumn: '1 / -1' }}>
@@ -1034,7 +1042,14 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
 
                 {jobDescriptions.map((job, index) => (
                   (job.results.tailored || job.results.coverLetter) && (
-                    <div key={job.id} className="job-result-block" style={{ gridColumn: '1 / -1' }}>
+                    <>
+                      {/* Ad Unit - Between Jobs (every 2) */}
+                      {index > 0 && index % 2 === 0 && (
+                        <div key={`ad-${job.id}`} style={{ gridColumn: '1 / -1', margin: '20px 0' }}>
+                          <AdUnit slot="1678163652" />
+                        </div>
+                      )}
+                      <div key={job.id} className="job-result-block" style={{ gridColumn: '1 / -1' }}>
                       {(() => {
                         const jobLabel = deriveJobLabel(job, index)
                         const resumePart = job.results.tailored ? 'Resume' : ''
@@ -1142,6 +1157,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                         </>
                       )}
                     </div>
+                    </>
                   )
                 ))}
 
@@ -1272,6 +1288,18 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
               )}
 
             </div>
+
+            {/* Ad Unit - Bottom of Page */}
+            {results.length > 0 && (
+              <div style={{ margin: '40px 0', textAlign: 'center' }}>
+                <AdUnit slot="1678163652" format="horizontal" />
+              </div>
+            )}
+
+            <div style={{ textAlign: 'center', margin: '12px 0' }}>
+              <a href="https://resumerush.io/ads.txt" target="_blank" rel="noopener">ads.txt</a>
+            </div>
+
           </div>
         )}
 
@@ -1290,6 +1318,12 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                 </div>
               </div>
               <div className="modal-body">
+                {/* Ad Unit - Bottom of Page (before modal) */}
+                {results.length > 0 && !showModal && (
+                  <div style={{ margin: '40px 0' }}>
+                    <AdUnit slot="REPLACE_WITH_SLOT_ID_3" format="horizontal" />
+                  </div>
+                )}
                 <iframe 
                   src={activePreviewTab === 'resume' ? pdfUrl : coverPdfUrl} 
                   title={activePreviewTab === 'resume' ? 'Resume Preview' : 'Cover Letter Preview'} 

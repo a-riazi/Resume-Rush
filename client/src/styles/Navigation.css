@@ -31,6 +31,66 @@
   gap: 1rem;
 }
 
+/* Ads.txt Status Badge */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  text-decoration: none;
+}
+
+.status-badge.checking {
+  background: #eef2ff;
+  color: #1e40af;
+  border-color: #c7d2fe;
+}
+
+.status-badge.ok {
+  background: #e6fffa;
+  color: #0f766e;
+  border-color: #2dd4bf;
+}
+
+.status-badge.warn {
+  background: #fff7ed;
+  color: #b45309;
+  border-color: #fdba74;
+}
+
+.status-badge.missing {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+.main-nav.dark .status-badge.checking {
+  background: #0b1f4a;
+  color: #93c5fd;
+  border-color: #1d4ed8;
+}
+
+.main-nav.dark .status-badge.ok {
+  background: #052e2a;
+  color: #2dd4bf;
+  border-color: #0f766e;
+}
+
+.main-nav.dark .status-badge.warn {
+  background: #3b2805;
+  color: #fdba74;
+  border-color: #b45309;
+}
+
+.main-nav.dark .status-badge.missing {
+  background: #3f0f0f;
+  color: #fca5a5;
+  border-color: #b91c1c;
+}
+
 .nav-logo {
   display: flex;
   align-items: center;
