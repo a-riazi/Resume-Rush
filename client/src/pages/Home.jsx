@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import axios from 'axios'
 import '../App.css'
 import AdUnit from '../components/AdUnit'
+import BugReport from '../components/BugReport'
 
-// Base API URL comes from environment; falls back to same-origin
-const API_BASE_URL = import.meta.env.VITE_API_URL || ''
+// Base API URL comes from environment; falls back to localhost for dev or same-origin for production
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : '')
 
 // Maximum number of job descriptions allowed (configurable for API limits)
 const MAX_JOB_DESCRIPTIONS = 3
@@ -1303,10 +1304,6 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
               </div>
             )}
 
-            <div style={{ textAlign: 'center', margin: '12px 0' }}>
-              <a href="https://resumerush.io/ads.txt" target="_blank" rel="noopener">ads.txt</a>
-            </div>
-
           </div>
         )}
 
@@ -1336,6 +1333,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
         )}
       </div>
     </header>
+    <BugReport />
   </div>
   )
 }

@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const compression = require('compression');
+const nodemailer = require('nodemailer');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, UnderlineType } = require('docx');
 const pdf = require('pdf-parse');
@@ -19,6 +20,8 @@ const PORT = process.env.PORT || 5000;
 const allowedOrigins = [
   'https://resumerush.io',
   'https://www.resumerush.io',
+  'http://localhost:5173', // Development frontend
+  'http://localhost:3000',  // Alternative dev port
   // Allow default Railway preview domain if accessed directly
   // Add your Vercel preview domains here if needed
 ];
@@ -1236,6 +1239,99 @@ app.post('/api/export-docx-cover', async (req, res) => {
 });
 
 // Proofread endpoint
+
+// Bug Report Endpoint
+app.post('/api/send-bug-report', upload.single('screenshot'), async (req, res) => {
+  try {
+    const { title, description, email, steps } = req.body;
+
+    console.log('[Bug Report] Received:', { title, description, email, steps, hasFile: !!req.file });
+
+    // Validate required fields
+    if (!title || !description || !email) {
+      console.log('[Bug Report] Validation failed - missing fields');
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: title, description, or email',
+      });
+    }
+
+    // Check email credentials
+    if (!process.env.EMAIL_PASSWORD) {
+      console.log('[Bug Report] EMAIL_PASSWORD not set in .env');
+      return res.status(500).json({
+        success: false,
+        error: 'Email service not configured. Please contact admin.',
+      });
+    }
+
+    // Create nodemailer transporter
+    console.log('[Bug Report] Creating email transporter...');
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER || 'resumerushio@gmail.com',
+        pass: process.env.EMAIL_PASSWORD,
+      },
+    });
+
+    // Build email HTML
+    let emailHTML = `
+      <h2>New Bug Report Submitted</h2>
+      <p><strong>Title:</strong> ${title}</p>
+      <p><strong>Reporter Email:</strong> ${email}</p>
+      <hr />
+      <h3>Description</h3>
+      <p>${description.replace(/\n/g, '<br>')}</p>
+    `;
+
+    if (steps) {
+      emailHTML += `
+        <h3>Steps to Reproduce</h3>
+        <p>${steps.replace(/\n/g, '<br>')}</p>
+      `;
+    }
+
+    // Prepare email attachments
+    const attachments = [];
+    if (req.file) {
+      attachments.push({
+        filename: req.file.originalname,
+        path: req.file.path,
+      });
+    }
+
+    // Send email
+    console.log('[Bug Report] Sending email...');
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER || 'resumerushio@gmail.com',
+      to: 'resumerushio@gmail.com',
+      subject: `Bug Report: ${title}`,
+      html: emailHTML,
+      attachments: attachments,
+    });
+
+    console.log('[Bug Report] Email sent successfully');
+
+    // Clean up uploaded file after sending
+    if (req.file) {
+      fs.unlink(req.file.path, (err) => {
+        if (err) console.error('Error deleting temp file:', err);
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Bug report submitted successfully',
+    });
+  } catch (err) {
+    console.error('[Bug Report] Error:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to send bug report',
+    });
+  }
+});
 
 // Health check endpoints (for Railway and general use)
 app.get('/api/health', (req, res) => {
