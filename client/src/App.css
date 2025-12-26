@@ -661,7 +661,7 @@
 .results-section {
   background: #f7faff;
   border-radius: 18px;
-  padding: 2.5rem;
+  padding: 0 2rem 2rem; /* remove top padding to eliminate space above results */
   box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
   border: 1px solid #d7e6ff;
 }
@@ -670,8 +670,8 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 2rem;
-  padding-bottom: 1.5rem;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
   border-bottom: 2px solid #dbeafe;
 }
 
@@ -1238,6 +1238,9 @@
   border-radius: 8px;
   background: white;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+.adsbygoogle {
+  min-height: 0 !important; /* ensure no default min-height reserves space when no ad */
 }
 
 .dark-mode .pdf-preview {

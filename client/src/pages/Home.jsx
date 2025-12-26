@@ -1029,13 +1029,6 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
               </div>
             </div>
 
-            {/* Ad Unit - Top of Results */}
-            {jobDescriptions.some(j => j.results.tailored || j.results.coverLetter) && (
-              <div style={{ gridColumn: '1 / -1', margin: '20px 0' }}>
-                <AdUnit slot="1678163652" />
-              </div>
-            )}
-
             <div className="results-grid">
                 {loading && (
                   <div className="loading-spinner-wrapper" style={{ gridColumn: '1 / -1' }}>
@@ -1053,7 +1046,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                     <>
                       {/* Ad Unit - Between Jobs (every 2) */}
                       {index > 0 && index % 2 === 0 && (
-                        <div key={`ad-${job.id}`} style={{ gridColumn: '1 / -1', margin: '20px 0' }}>
+                        <div key={`ad-${job.id}`} style={{ gridColumn: '1 / -1', margin: 0 }}>
                           <AdUnit slot="1678163652" />
                         </div>
                       )}
