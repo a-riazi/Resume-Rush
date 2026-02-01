@@ -1,0 +1,208 @@
+.user-profile {
+  position: relative;
+}
+
+.user-profile-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 24px;
+  background: #f5f5f5;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.user-profile-trigger:hover {
+  background: #efefef;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.user-avatar-placeholder {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.user-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 8px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 280px;
+  z-index: 1000;
+  animation: slideDown 0.2s ease-in-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.user-dropdown-header {
+  padding: 16px;
+  border-bottom: 1px solid #eee;
+}
+
+.user-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.user-info strong {
+  font-size: 14px;
+  color: #222;
+  margin-bottom: 4px;
+}
+
+.user-info small {
+  font-size: 12px;
+  color: #999;
+}
+
+.user-dropdown-section {
+  padding: 16px;
+  border-bottom: 1px solid #eee;
+}
+
+.tier-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.usage-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.usage-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.usage-item span {
+  color: #666;
+}
+
+.usage-item strong {
+  color: #222;
+  font-weight: 600;
+}
+
+.usage-progress {
+  width: 100%;
+  height: 6px;
+  background: #f0f0f0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.usage-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+  transition: width 0.3s ease;
+}
+
+.usage-info small {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
+}
+
+.subscription-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.subscription-info small {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 4px;
+}
+
+.subscription-info strong {
+  font-size: 14px;
+  color: #222;
+  margin-bottom: 8px;
+}
+
+.renewal-date {
+  font-size: 11px;
+  color: #bbb;
+  display: block;
+  margin-top: 4px;
+}
+
+.user-dropdown-logout {
+  width: calc(100% - 32px);
+  margin: 8px 16px 16px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: #f5f5f5;
+  color: #333;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.user-dropdown-logout:hover {
+  background: #e8e8e8;
+}
+
+@media (max-width: 480px) {
+  .user-profile-trigger {
+    padding: 4px 8px;
+  }
+
+  .user-name {
+    display: none;
+  }
+
+  .user-dropdown {
+    min-width: 240px;
+    right: -50%;
+  }
+}

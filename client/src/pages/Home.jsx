@@ -3,6 +3,7 @@ import axios from 'axios'
 import '../App.css'
 import AdUnit from '../components/AdUnit'
 import BugReport from '../components/BugReport'
+import { useAuth } from '../context/AuthContext'
 
 // Base API URL comes from environment; falls back to localhost for dev or same-origin for production
 const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : '')
@@ -101,9 +102,11 @@ function getInitialCheckboxState() {
 }
 
 export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) {
+  const { user, isAuthenticated } = useAuth()
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
+  const [usageStats, setUsageStats] = useState({ used: 0, limit: 3, remaining: 3, tier: 'free', resetInfo: 'daily' })
   const [jobDescriptions, setJobDescriptions] = useState([
     { id: Date.now(), title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }
   ])
@@ -128,6 +131,23 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
   const [generateResume, setGenerateResume] = useState(initialCheckboxState.generateResume)
   const [generateCoverLetter, setGenerateCoverLetter] = useState(initialCheckboxState.generateCoverLetter)
   const [limitToOnePage, setLimitToOnePage] = useState(initialCheckboxState.limitToOnePage)
+
+  // Fetch usage stats on mount and after authentication changes
+  useEffect(() => {
+    const fetchUsageStats = async () => {
+      try {
+        const token = localStorage.getItem('auth_token')
+        const headers = token ? { Authorization: `Bearer ${token}` } : {}
+        
+        const response = await axios.get(`${API_BASE_URL}/api/usage`, { headers })
+        setUsageStats(response.data)
+      } catch (err) {
+        console.error('Failed to fetch usage stats:', err)
+      }
+    }
+
+    fetchUsageStats()
+  }, [isAuthenticated, user])
 
   // Restore persisted state so returning to Home keeps results visible
   useEffect(() => {
@@ -384,6 +404,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
       const parseResponse = await axios.post(`${API_BASE_URL}/api/upload`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
+          Authorization: localStorage.getItem('auth_token') ? `Bearer ${localStorage.getItem('auth_token')}` : undefined,
         },
       })
 
@@ -391,6 +412,11 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
         setError('Failed to parse resume. Please try again.')
         setLoading(false)
         return
+      }
+
+      // Update usage stats after successful upload
+      if (parseResponse.data.usage) {
+        setUsageStats(parseResponse.data.usage)
       }
 
       setResult(parseResponse.data.data)
@@ -788,11 +814,38 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
       <header className="header">
         <h1><img src="./Logo.png" alt="Resume Rush Logo" className="header-logo" /> Resume Rush</h1>
         <p>AI-Powered Resume Tailor</p>
+      </header>
 
-          <div className="container">
-            {!result ? (
-              <>
-                <div className="upload-section">
+      {/* Usage Counter Badge */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        marginBottom: '12px',
+        opacity: 0.85,
+      }}>
+        <div style={{
+          backgroundColor: usageStats.remaining === 0 ? 'rgba(220, 38, 38, 0.1)' : 'rgba(59, 130, 246, 0.1)',
+          color: usageStats.remaining === 0 ? '#991b1b' : '#1e40af',
+          padding: '6px 14px',
+          borderRadius: '20px',
+          fontSize: '0.85rem',
+          fontWeight: 600,
+          border: `1px solid ${usageStats.remaining === 0 ? 'rgba(220, 38, 38, 0.3)' : 'rgba(59, 130, 246, 0.3)'}`,
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+        }}>
+          <span>{usageStats.remaining === 0 ? '⚠️' : '✨'}</span>
+          <span>
+            {usageStats.remaining} of {usageStats.limit} generations remaining
+          </span>
+        </div>
+      </div>
+
+      <div className="container">
+        {!result ? (
+          <>
+            <div className="upload-section">
                   <input
                     type="file"
                     id="file-input"
@@ -1325,8 +1378,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
           </div>
         )}
       </div>
-    </header>
-    <BugReport />
-  </div>
+      <BugReport />
+    </div>
   )
 }

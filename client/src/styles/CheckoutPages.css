@@ -1,0 +1,145 @@
+.checkout-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.checkout-content {
+  background: white;
+  border-radius: 12px;
+  padding: 60px 40px;
+  max-width: 500px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.5s ease-in-out;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.checkout-icon {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  font-weight: bold;
+}
+
+.checkout-icon.success {
+  background: #e8f5e9;
+  color: #4caf50;
+}
+
+.checkout-icon.cancel {
+  background: #ffebee;
+  color: #f44336;
+}
+
+.checkout-content h1 {
+  font-size: 28px;
+  margin-bottom: 10px;
+  color: #222;
+}
+
+.checkout-content > p {
+  color: #666;
+  margin-bottom: 30px;
+  font-size: 16px;
+}
+
+.success-details,
+.cancel-details {
+  background: #f9f9f9;
+  border-radius: 8px;
+  padding: 20px;
+  margin: 20px 0;
+  text-align: left;
+}
+
+.success-details p,
+.cancel-details p {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 15px;
+}
+
+.success-details ul,
+.cancel-details ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.success-details li,
+.cancel-details li {
+  font-size: 14px;
+  color: #555;
+  padding: 8px 0;
+  padding-left: 24px;
+  position: relative;
+}
+
+.success-details li::before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  color: #4caf50;
+  font-weight: bold;
+}
+
+.cancel-details li::before {
+  content: '–';
+  position: absolute;
+  left: 0;
+  color: #999;
+  font-weight: bold;
+}
+
+.checkout-btn {
+  margin-top: 30px;
+  padding: 12px 32px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.checkout-btn:hover {
+  background: linear-gradient(135deg, #5568d3 0%, #6a3a8a 100%);
+  transform: scale(1.05);
+}
+
+@media (max-width: 480px) {
+  .checkout-content {
+    padding: 40px 20px;
+  }
+
+  .checkout-icon {
+    width: 60px;
+    height: 60px;
+    font-size: 32px;
+  }
+
+  .checkout-content h1 {
+    font-size: 22px;
+  }
+}

@@ -13,16 +13,22 @@
   "type": "commonjs",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "bcryptjs": "^3.0.3",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
     "docx": "^8.5.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "google-auth-library": "^10.5.0",
+    "jsonwebtoken": "^9.0.3",
     "mammoth": "^1.11.0",
     "multer": "^2.0.2",
     "nodemailer": "^7.0.12",
     "pdf-parse": "^1.1.1",
-    "pdfkit": "^0.15.0"
+    "pdfkit": "^0.15.0",
+    "pg": "^8.16.3",
+    "sequelize": "^6.37.7",
+    "stripe": "^20.1.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

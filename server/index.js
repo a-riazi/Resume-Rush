@@ -12,6 +12,11 @@ const mammoth = require('mammoth');
 const fs = require('fs');
 const path = require('path');
 const { templates, templateKeys, getTemplate } = require('./templates');
+const { initializeDatabase, User, UsageMetrics, Subscription, AnonymousUsage } = require('./database');
+const { optionalAuthMiddleware } = require('./auth');
+const { canPerformAction, incrementUsage, TIER_CONFIG } = require('./tiers');
+const authRoutes = require('./authRoutes');
+const stripeRoutes = require('./stripeRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -92,6 +97,51 @@ try {
   console.error('❌ Failed to initialize Gemini API:', error.message);
   process.exit(1);
 }
+
+// Helper: Get client IP address
+function getClientIp(req) {
+  return req.headers['x-forwarded-for']?.split(',')[0].trim() || 
+         req.headers['x-real-ip'] || 
+         req.connection.remoteAddress || 
+         req.socket.remoteAddress || 
+         'unknown';
+}
+
+// Helper: Check if anonymous usage needs reset (24 hours)
+function needsDailyReset(lastResetDate) {
+  const now = new Date();
+  const lastReset = new Date(lastResetDate);
+  const hoursSinceReset = (now - lastReset) / (1000 * 60 * 60);
+  return hoursSinceReset >= 24;
+}
+
+// Helper: Get or create anonymous usage record
+async function getAnonymousUsage(ipAddress) {
+  let usage = await AnonymousUsage.findOne({
+    where: { ipAddress },
+    order: [['createdAt', 'DESC']],
+  });
+
+  // Create new record if none exists
+  if (!usage) {
+    usage = await AnonymousUsage.create({
+      ipAddress,
+      generationsUsed: 0,
+      lastResetDate: new Date(),
+    });
+  }
+
+  // Reset if 24 hours have passed
+  if (needsDailyReset(usage.lastResetDate)) {
+    await usage.update({
+      generationsUsed: 0,
+      lastResetDate: new Date(),
+    });
+  }
+
+  return usage;
+}
+
 
 async function inferJobTitleWithGemini(jobDescription) {
   const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
@@ -903,12 +953,54 @@ async function buildCoverDocx(parsed = {}, templateKey = 'classic', cover = {}, 
 }
 
 // Upload and parse endpoint
-app.post('/api/upload', upload.single('resume'), async (req, res) => {
+app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (req, res) => {
   let filePath = null;
   
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // Check user tier and usage limits
+    let user = null;
+    let usageMetrics = null;
+    let anonymousUsage = null;
+    let isAnonymous = !req.userId;
+
+    if (req.userId) {
+      // Authenticated user
+      user = await User.findByPk(req.userId);
+      usageMetrics = await UsageMetrics.findOne({
+        where: { userId: req.userId },
+        order: [['createdAt', 'DESC']],
+      });
+
+      if (!user || !usageMetrics) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+    } else {
+      // Anonymous user - track by IP
+      const ipAddress = getClientIp(req);
+      anonymousUsage = await getAnonymousUsage(ipAddress);
+      
+      usageMetrics = {
+        generationsUsed: anonymousUsage.generationsUsed,
+        generationsLimit: TIER_CONFIG.free.generationsLimit,
+      };
+    }
+
+    // Check if user has generations remaining
+    const remaining = usageMetrics.generationsLimit - usageMetrics.generationsUsed;
+    if (remaining <= 0) {
+      const tier = user?.tier || 'free';
+      const resetInfo = isAnonymous ? 'Resets in 24 hours' : 'Sign in with Google for 6 generations per month';
+      
+      return res.status(402).json({
+        error: `Generation limit reached. ${resetInfo}`,
+        tier: user?.tier || 'free',
+        remaining: 0,
+        limit: usageMetrics.generationsLimit,
+      });
     }
 
     const jobDescription = (req.body?.jobDescription || '').trim();
@@ -970,6 +1062,17 @@ app.post('/api/upload', upload.single('resume'), async (req, res) => {
       fs.unlinkSync(filePath);
     }
 
+    // Increment usage counter
+    if (isAnonymous && anonymousUsage) {
+      // Anonymous user - increment IP-based counter
+      anonymousUsage.generationsUsed += 1;
+      await anonymousUsage.save();
+    } else if (usageMetrics && usageMetrics.save) {
+      // Authenticated user - increment database counter
+      usageMetrics.generationsUsed += 1;
+      await usageMetrics.save();
+    }
+
     // Normalize the parsed data to a stable schema to protect the UI
     const normalizedParsed = {
       name: parsedResume?.name || '',
@@ -998,11 +1101,23 @@ app.post('/api/upload', upload.single('resume'), async (req, res) => {
             : [])
     };
 
+    // Get updated counts for response
+    const finalUsed = isAnonymous ? anonymousUsage.generationsUsed : usageMetrics.generationsUsed;
+    const finalLimit = isAnonymous ? TIER_CONFIG.free.generationsLimit : usageMetrics.generationsLimit;
+    const updatedRemaining = Math.max(0, finalLimit - finalUsed);
+
     res.json({
       success: true,
       data: normalizedParsed,
       tailored: tailoredResume || null,
-      coverLetter: coverLetter || null
+      coverLetter: coverLetter || null,
+      usage: {
+        used: finalUsed,
+        limit: finalLimit,
+        remaining: updatedRemaining,
+        tier: user?.tier || 'free',
+        resetInfo: isAnonymous ? 'daily' : 'monthly',
+      },
     });
 
   } catch (error) {
@@ -1077,13 +1192,61 @@ function validateJobDescription(jobDescription) {
 }
 
 // Tailor endpoint - for tailoring already-parsed resume to job descriptions
-app.post('/api/tailor', async (req, res) => {
+app.post('/api/tailor', optionalAuthMiddleware, async (req, res) => {
   try {
     const parsed = req.body?.parsed;
     const jobDescription = (req.body?.jobDescription || '').trim();
     const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
     const generateResume = req.body?.generateResume === 'true' || req.body?.generateResume === true;
     const generateCoverLetter = req.body?.generateCoverLetter === 'true' || req.body?.generateCoverLetter === true;
+
+    // Check user tier and usage limits
+    let user = null;
+    let usageMetrics = null;
+
+    if (req.userId) {
+      user = await User.findByPk(req.userId);
+      usageMetrics = await UsageMetrics.findOne({
+        where: { userId: req.userId },
+        order: [['createdAt', 'DESC']],
+      });
+
+      if (!user || !usageMetrics) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+    } else {
+      // Anonymous user uses free tier limits
+      usageMetrics = {
+        generationsUsed: 0,
+        generationsLimit: TIER_CONFIG.free.generationsLimit,
+        currentJobCount: 0,
+        maxJobCount: TIER_CONFIG.free.jobsPerSession,
+      };
+    }
+
+    // Check if user has generations remaining
+    const remaining = usageMetrics.generationsLimit - usageMetrics.generationsUsed;
+    if (remaining <= 0) {
+      return res.status(402).json({
+        success: false,
+        error: 'Generation limit reached. Please upgrade your plan.',
+        tier: user?.tier || 'free',
+        remaining: 0,
+        limit: usageMetrics.generationsLimit,
+      });
+    }
+
+    // Check job count limit
+    const jobsRemaining = usageMetrics.maxJobCount - usageMetrics.currentJobCount;
+    if (jobsRemaining <= 0) {
+      return res.status(402).json({
+        success: false,
+        error: 'Job description limit reached for this session. Please upgrade your plan.',
+        tier: user?.tier || 'free',
+        jobsRemaining: 0,
+        jobsLimit: usageMetrics.maxJobCount,
+      });
+    }
 
     console.log(`[/api/tailor] Received request`);
     console.log(`  generateResume: ${generateResume}`);
@@ -1126,11 +1289,30 @@ app.post('/api/tailor', async (req, res) => {
       console.log(`[/api/tailor] Skipping cover letter generation (generateCoverLetter=false)`);
     }
 
+    // Increment usage counters
+    if (usageMetrics && usageMetrics.save) {
+      usageMetrics.generationsUsed += 1;
+      usageMetrics.currentJobCount += 1;
+      await usageMetrics.save();
+    }
+
     console.log(`[/api/tailor] Sending response with success=true`);
+    
+    const updatedRemaining = Math.max(0, (usageMetrics.generationsLimit || TIER_CONFIG.free.generationsLimit) - (usageMetrics.generationsUsed || 0));
+    const updatedJobsRemaining = Math.max(0, (usageMetrics.maxJobCount || TIER_CONFIG.free.jobsPerSession) - (usageMetrics.currentJobCount || 0));
+
     res.json({
       success: true,
       tailored: tailoredResume || null,
-      coverLetter: coverLetter || null
+      coverLetter: coverLetter || null,
+      usage: {
+        used: usageMetrics.generationsUsed || 1,
+        limit: usageMetrics.generationsLimit || TIER_CONFIG.free.generationsLimit,
+        remaining: updatedRemaining,
+        jobsUsed: usageMetrics.currentJobCount || 1,
+        jobsLimit: usageMetrics.maxJobCount || TIER_CONFIG.free.jobsPerSession,
+        jobsRemaining: updatedJobsRemaining,
+      },
     });
   } catch (error) {
     console.error('[/api/tailor] Error:', error);
@@ -1333,6 +1515,58 @@ app.post('/api/send-bug-report', upload.single('screenshot'), async (req, res) =
   }
 });
 
+// Auth and Stripe routes
+app.use('/api', authRoutes);
+app.use('/api', stripeRoutes);
+
+// Get usage stats endpoint
+app.get('/api/usage', optionalAuthMiddleware, async (req, res) => {
+  try {
+    let used = 0;
+    let limit = 3;
+    let tier = 'free';
+    let resetInfo = 'daily';
+
+    if (req.userId) {
+      // Authenticated user
+      const user = await User.findByPk(req.userId);
+      const usageMetrics = await UsageMetrics.findOne({
+        where: { userId: req.userId },
+        order: [['createdAt', 'DESC']],
+      });
+
+      if (user && usageMetrics) {
+        tier = user.tier;
+        used = usageMetrics.generationsUsed;
+        limit = TIER_CONFIG[tier]?.generationsLimit || 6;
+        resetInfo = tier === 'auth-free' ? 'monthly' : 'monthly';
+      }
+    } else {
+      // Anonymous user - check by IP
+      const ipAddress = getClientIp(req);
+      const anonymousUsage = await getAnonymousUsage(ipAddress);
+      
+      used = anonymousUsage.generationsUsed;
+      limit = TIER_CONFIG.free.generationsLimit;
+      tier = 'free';
+      resetInfo = 'daily';
+    }
+
+    const remaining = Math.max(0, limit - used);
+
+    res.json({
+      used,
+      limit,
+      remaining,
+      tier,
+      resetInfo,
+    });
+  } catch (error) {
+    console.error('[Usage] Error:', error);
+    res.status(500).json({ error: 'Failed to get usage stats' });
+  }
+});
+
 // Health check endpoints (for Railway and general use)
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Resume Rocket API is running' });
@@ -1343,13 +1577,34 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Resume Rocket API is running' });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Resume Rocket server running on http://localhost:${PORT}`);
-  console.log(`✓ Gemini API configured`);
-  console.log(`✓ Ready to parse resumes`);
-  console.log(`📋 Environment check:`);
-  console.log(`  PORT: ${PORT}`);
-  console.log(`  NODE_ENV: ${process.env.NODE_ENV}`);
-  console.log(`  GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? '✓ Set' : '❌ Missing'}`);
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Resume Rocket API is running' });
 });
+
+// Start server with database initialization
+async function startServer() {
+  try {
+    // Initialize database
+    await initializeDatabase();
+    console.log('✓ Database initialized');
+
+    app.listen(PORT, () => {
+      console.log(`🚀 Resume Rocket server running on http://localhost:${PORT}`);
+      console.log(`✓ Gemini API configured`);
+      console.log(`✓ Database connected`);
+      console.log(`✓ Ready to parse resumes`);
+      console.log(`📋 Environment check:`);
+      console.log(`  PORT: ${PORT}`);
+      console.log(`  NODE_ENV: ${process.env.NODE_ENV}`);
+      console.log(`  GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? '✓ Set' : '❌ Missing'}`);
+      console.log(`  DATABASE_URL: ${process.env.DATABASE_URL ? '✓ Set' : '❌ Missing'}`);
+      console.log(`  STRIPE_SECRET_KEY: ${process.env.STRIPE_SECRET_KEY ? '✓ Set' : '❌ Missing'}`);
+      console.log(`  GOOGLE_CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? '✓ Set' : '❌ Missing'}`);
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error.message);
+    process.exit(1);
+  }
+}
+
+startServer();
