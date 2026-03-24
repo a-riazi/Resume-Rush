@@ -37,11 +37,20 @@ process.on('uncaughtException', (error) => {
 });
 
 // Middleware
+const configuredOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.FRONTEND_URL_ALT,
+  process.env.CLIENT_URL,
+]
+  .filter(Boolean)
+  .flatMap((value) => String(value).split(',').map((item) => item.trim()).filter(Boolean));
+
 const allowedOrigins = [
   'https://resumerush.io',
   'https://www.resumerush.io',
   'http://localhost:5173', // Development frontend
   'http://localhost:3000',  // Alternative dev port
+  ...configuredOrigins,
   // Allow default Railway preview domain if accessed directly
   // Add your Vercel preview domains here if needed
 ];

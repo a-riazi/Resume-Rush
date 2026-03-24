@@ -9,7 +9,7 @@ import WarningBanner from '../components/WarningBanner'
 import { useAuth } from '../context/AuthContext'
 
 // Base API URL comes from environment; falls back to localhost for dev or same-origin for production
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : '')
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : 'https://api.resumerush.io')
 
 // Maximum number of job descriptions allowed (configurable for API limits)
 const MAX_JOB_DESCRIPTIONS = 3

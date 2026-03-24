@@ -6,10 +6,16 @@ const { generateToken, authMiddleware } = require('./auth');
 const { TIER_CONFIG } = require('./tiers');
 
 const router = express.Router();
-const oauth2Client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const primaryGoogleClientId =
+  process.env.GOOGLE_CLIENT_ID ||
+  process.env.GOOGLE_OAUTH_CLIENT_ID ||
+  process.env.GOOGLE_CLIENT_ID_WEB ||
+  process.env.GOOGLE_CLIENT_ID_DEV;
+const oauth2Client = new OAuth2Client(primaryGoogleClientId);
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 const allowedGoogleClientIds = [
   process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_OAUTH_CLIENT_ID,
   process.env.GOOGLE_CLIENT_ID_WEB,
   process.env.GOOGLE_CLIENT_ID_DEV,
   // Frontend fallback client ID used in development

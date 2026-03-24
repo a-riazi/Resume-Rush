@@ -11,7 +11,7 @@ export default function BillingPortal() {
   const [error, setError] = useState(null);
   const [statusMessage, setStatusMessage] = useState(null);
   const [portalUrl, setPortalUrl] = useState(null);
-  const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+  const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : 'https://api.resumerush.io');
 
   useEffect(() => {
     if (!isAuthenticated) {
