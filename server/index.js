@@ -1854,7 +1854,6 @@ app.get('/api/usage', optionalAuthMiddleware, async (req, res) => {
       const user = await User.findByPk(req.userId);
       const usageMetrics = await UsageMetrics.findOne({
         where: { userId: req.userId },
-        order: [['createdAt', 'DESC']],
       });
 
       console.log(`[/api/usage] User ${req.userId}: found usageMetrics=${!!usageMetrics}, tier=${user?.tier}`);

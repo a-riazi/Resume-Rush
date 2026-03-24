@@ -228,7 +228,6 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
     // Get usage metrics separately (create if missing)
     let usageMetrics = await UsageMetrics.findOne({
       where: { userId: req.userId },
-      order: [['createdAt', 'DESC']],
     });
 
     if (!usageMetrics) {
@@ -248,7 +247,6 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
     // Get subscription separately
     let subscriptions = await Subscription.findAll({
       where: { userId: req.userId },
-      order: [['createdAt', 'DESC']],
     });
 
     if (!subscriptions.length && user.tier === 'monthly') {
