@@ -10,6 +10,10 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 function getFrontendUrl(req) {
+  if (process.env.NODE_ENV === 'production') {
+    return 'https://resumerush.io';
+  }
+
   const requestOrigin = req.headers.origin;
   if (requestOrigin && typeof requestOrigin === 'string') {
     return requestOrigin;
@@ -19,7 +23,7 @@ function getFrontendUrl(req) {
     return FRONTEND_URL;
   }
 
-  return process.env.NODE_ENV === 'production' ? 'https://resumerush.io' : 'http://localhost:5173';
+  return 'http://localhost:5173';
 }
 
 function mapStripeStatus(stripeSubscription) {
