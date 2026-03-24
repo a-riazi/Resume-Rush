@@ -1850,49 +1850,62 @@ app.get('/api/usage', optionalAuthMiddleware, async (req, res) => {
     let bonusDaysLeft = null;
 
     if (req.userId) {
-      // Authenticated user
-      const user = await User.findByPk(req.userId);
-      const usageMetrics = await UsageMetrics.findOne({
-        where: { userId: req.userId },
-      });
+      try {
+        // Authenticated user
+        const user = await User.findByPk(req.userId);
+        const usageMetrics = await UsageMetrics.findOne({
+          where: { userId: req.userId },
+        });
 
-      console.log(`[/api/usage] User ${req.userId}: found usageMetrics=${!!usageMetrics}, tier=${user?.tier}`);
+        console.log(`[/api/usage] User ${req.userId}: found usageMetrics=${!!usageMetrics}, tier=${user?.tier}`);
 
-      if (user && usageMetrics) {
-        await applyMonthlyBonus(user, usageMetrics);
-        tier = user.tier;
-        limit = usageMetrics.generationsLimit || TIER_CONFIG[tier]?.generationsLimit || 6;
-        resetInfo = tier === 'auth-free' ? 'monthly' : 'monthly';
-        
-        // Check if monthly reset is needed for auth-free tier
-        if (tier === 'auth-free' && usageMetrics.resetDate) {
-          const lastReset = new Date(usageMetrics.resetDate);
-          const today = new Date();
-          const monthsDiff = (today.getFullYear() - lastReset.getFullYear()) * 12 + (today.getMonth() - lastReset.getMonth());
-          
-          console.log(`[/api/usage] Monthly reset check for user ${req.userId}: lastReset=${lastReset.toISOString()}, today=${today.toISOString()}, monthsDiff=${monthsDiff}, generationsUsed=${usageMetrics.generationsUsed}`);
-          
-          if (monthsDiff >= 1) {
-            // Reset the counter
-            console.log(`[/api/usage] Resetting counter for user ${req.userId} due to monthly reset`);
-            usageMetrics.generationsUsed = 0;
-            usageMetrics.resetDate = new Date();
-            await usageMetrics.save();
+        if (user && usageMetrics) {
+          await applyMonthlyBonus(user, usageMetrics);
+          tier = user.tier;
+          limit = usageMetrics.generationsLimit || TIER_CONFIG[tier]?.generationsLimit || 6;
+          resetInfo = tier === 'auth-free' ? 'monthly' : 'monthly';
+
+          // Check if monthly reset is needed for auth-free tier
+          if (tier === 'auth-free' && usageMetrics.resetDate) {
+            const lastReset = new Date(usageMetrics.resetDate);
+            const today = new Date();
+            const monthsDiff = (today.getFullYear() - lastReset.getFullYear()) * 12 + (today.getMonth() - lastReset.getMonth());
+
+            console.log(`[/api/usage] Monthly reset check for user ${req.userId}: lastReset=${lastReset.toISOString()}, today=${today.toISOString()}, monthsDiff=${monthsDiff}, generationsUsed=${usageMetrics.generationsUsed}`);
+
+            if (monthsDiff >= 1) {
+              // Reset the counter
+              console.log(`[/api/usage] Resetting counter for user ${req.userId} due to monthly reset`);
+              usageMetrics.generationsUsed = 0;
+              usageMetrics.resetDate = new Date();
+              await usageMetrics.save();
+            }
+          }
+
+          used = usageMetrics.generationsUsed;
+          jobsUsed = usageMetrics.currentJobCount || 0;
+          jobsLimit = usageMetrics.maxJobCount || TIER_CONFIG[tier]?.jobsPerSession || TIER_CONFIG.free.jobsPerSession;
+
+          bonusGenerations = usageMetrics.bonusGenerations || 0;
+          bonusExpiresAt = usageMetrics.bonusExpiresAt || null;
+          if (bonusGenerations > 0 && bonusExpiresAt) {
+            const now = new Date();
+            const expiry = new Date(bonusExpiresAt);
+            const daysLeft = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
+            bonusDaysLeft = daysLeft > 0 ? daysLeft : 0;
           }
         }
-        
-        used = usageMetrics.generationsUsed;
-        jobsUsed = usageMetrics.currentJobCount || 0;
-        jobsLimit = usageMetrics.maxJobCount || TIER_CONFIG[tier]?.jobsPerSession || TIER_CONFIG.free.jobsPerSession;
-
-        bonusGenerations = usageMetrics.bonusGenerations || 0;
-        bonusExpiresAt = usageMetrics.bonusExpiresAt || null;
-        if (bonusGenerations > 0 && bonusExpiresAt) {
-          const now = new Date();
-          const expiry = new Date(bonusExpiresAt);
-          const daysLeft = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
-          bonusDaysLeft = daysLeft > 0 ? daysLeft : 0;
-        }
+      } catch (authUsageError) {
+        console.error(`[/api/usage] Authenticated usage lookup failed for user ${req.userId}, returning free fallback:`, authUsageError.message);
+        used = 0;
+        limit = TIER_CONFIG.free.generationsLimit;
+        tier = 'free';
+        resetInfo = 'daily';
+        jobsUsed = 0;
+        jobsLimit = TIER_CONFIG.free.jobsPerSession;
+        bonusGenerations = 0;
+        bonusExpiresAt = null;
+        bonusDaysLeft = null;
       }
     } else {
       // Anonymous user - check by IP

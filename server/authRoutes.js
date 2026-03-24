@@ -226,28 +226,39 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
     }
 
     // Get usage metrics separately (create if missing)
-    let usageMetrics = await UsageMetrics.findOne({
-      where: { userId: req.userId },
-    });
-
-    if (!usageMetrics) {
-      const tierConfig = TIER_CONFIG[user.tier] || TIER_CONFIG['auth-free'] || TIER_CONFIG.free;
-      usageMetrics = await UsageMetrics.create({
-        userId: user.id,
-        generationsUsed: 0,
-        generationsLimit: tierConfig.generationsLimit,
-        currentJobCount: 0,
-        maxJobCount: tierConfig.jobsPerSession,
-        resetDate: new Date(),
+    let usageMetrics = null;
+    try {
+      usageMetrics = await UsageMetrics.findOne({
+        where: { userId: req.userId },
       });
+
+      if (!usageMetrics) {
+        const tierConfig = TIER_CONFIG[user.tier] || TIER_CONFIG['auth-free'] || TIER_CONFIG.free;
+        usageMetrics = await UsageMetrics.create({
+          userId: user.id,
+          generationsUsed: 0,
+          generationsLimit: tierConfig.generationsLimit,
+          currentJobCount: 0,
+          maxJobCount: tierConfig.jobsPerSession,
+          resetDate: new Date(),
+        });
+      }
+    } catch (usageError) {
+      console.error('[/api/auth/me] Usage query failed, returning safe defaults:', usageError.message);
     }
 
     console.log('[/api/auth/me] UsageMetrics found:', !!usageMetrics);
 
     // Get subscription separately
-    let subscriptions = await Subscription.findAll({
-      where: { userId: req.userId },
-    });
+    let subscriptions = [];
+    try {
+      subscriptions = await Subscription.findAll({
+        where: { userId: req.userId },
+      });
+    } catch (subscriptionError) {
+      console.error('[/api/auth/me] Subscription query failed, continuing without subscription:', subscriptionError.message);
+      subscriptions = [];
+    }
 
     if (!subscriptions.length && user.tier === 'monthly') {
       const synced = await syncStripeSubscriptionForUser(user);
