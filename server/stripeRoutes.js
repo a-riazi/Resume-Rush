@@ -9,6 +9,19 @@ const router = express.Router();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
+function getFrontendUrl(req) {
+  const requestOrigin = req.headers.origin;
+  if (requestOrigin && typeof requestOrigin === 'string') {
+    return requestOrigin;
+  }
+
+  if (FRONTEND_URL) {
+    return FRONTEND_URL;
+  }
+
+  return process.env.NODE_ENV === 'production' ? 'https://resumerush.io' : 'http://localhost:5173';
+}
+
 function mapStripeStatus(stripeSubscription) {
   if (!stripeSubscription) return 'active';
   const shouldCancel = stripeSubscription.cancel_at_period_end === true || stripeSubscription.status === 'canceled';
@@ -40,6 +53,7 @@ async function extractStripePeriodBounds(stripeSubscription) {
 // POST /api/checkout - Create Stripe checkout session
 router.post('/checkout', authMiddleware, async (req, res) => {
   try {
+    const frontendUrl = getFrontendUrl(req);
     const { planType } = req.body; // 'monthly' or 'one-time'
     const user = await User.findByPk(req.userId);
 
@@ -81,8 +95,8 @@ router.post('/checkout', authMiddleware, async (req, res) => {
           quantity: 1,
         },
       ],
-      success_url: `${FRONTEND_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${FRONTEND_URL}/checkout/cancel`,
+      success_url: `${frontendUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/checkout/cancel`,
       metadata: {
         userId: user.id,
         planType,
@@ -339,6 +353,7 @@ async function handlePaymentSucceeded(invoice) {
 // POST /api/stripe/create-portal-session - Create Stripe billing portal session
 const createPortalSessionHandler = async (req, res) => {
   try {
+    const frontendUrl = getFrontendUrl(req);
     const user = await User.findByPk(req.userId);
 
     if (!user) {
@@ -385,7 +400,7 @@ const createPortalSessionHandler = async (req, res) => {
     // Create billing portal session
     const session = await stripe.billingPortal.sessions.create({
       customer: stripeCustomerId,
-      return_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/`,
+      return_url: `${frontendUrl}/`,
     });
 
     res.json({
