@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "if [ -d client ]; then cd client && npm ci && npm run build && cd .. && rm -rf dist && cp -R client/dist dist; else npm ci && npm run build; fi",
+  "buildCommand": "if [ -d client ]; then cd client && npm ci --include=dev && npm run build && cd .. && rm -rf dist && cp -R client/dist dist; else npm ci --include=dev && npm run build; fi",
   "outputDirectory": "dist",
   "trailingSlash": false,
   "rewrites": [
