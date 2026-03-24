@@ -2,7 +2,7 @@
 const TIER_CONFIG = {
   free: {
     generationsLimit: 3,
-    jobsPerSession: 1,
+    jobsPerSession: 3,
     resetPeriod: 'daily', // Resets every 24 hours
     monthlyGenerations: null,
     price: 0,

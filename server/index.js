@@ -4,6 +4,7 @@ const multer = require('multer');
 const cors = require('cors');
 const compression = require('compression');
 const nodemailer = require('nodemailer');
+const Stripe = require('stripe');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, UnderlineType } = require('docx');
 const pdf = require('pdf-parse');
@@ -15,11 +16,24 @@ const { templates, templateKeys, getTemplate } = require('./templates');
 const { initializeDatabase, User, UsageMetrics, Subscription, AnonymousUsage } = require('./database');
 const { optionalAuthMiddleware } = require('./auth');
 const { canPerformAction, incrementUsage, TIER_CONFIG } = require('./tiers');
+const { getWarningEmailHTML } = require('./email-templates');
 const authRoutes = require('./authRoutes');
 const stripeRoutes = require('./stripeRoutes');
 
+const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
+
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Error handlers for unhandled errors
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  process.exit(1);
+});
 
 // Middleware
 const allowedOrigins = [
@@ -105,6 +119,40 @@ function getClientIp(req) {
          req.connection.remoteAddress || 
          req.socket.remoteAddress || 
          'unknown';
+}
+
+// Helper: Send warning email
+async function sendWarningEmail(user, type, data) {
+  try {
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER || 'resumerushio@gmail.com',
+        pass: process.env.EMAIL_PASSWORD,
+      },
+    });
+
+    const emailData = {
+      ...data,
+      actionUrl: data.actionUrl || process.env.FRONTEND_URL || 'http://localhost:5173',
+      userName: user.name || user.email.split('@')[0],
+    };
+
+    const { subject, html } = getWarningEmailHTML(type, emailData);
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER || 'resumerushio@gmail.com',
+      to: user.email,
+      subject,
+      html,
+    });
+
+    console.log(`[Warning Email] Sent ${type} email to ${user.email}`);
+    return true;
+  } catch (error) {
+    console.error(`[Warning Email] Failed to send ${type} email:`, error.message);
+    return false;
+  }
 }
 
 // Helper: Check if anonymous usage needs reset (24 hours)
@@ -952,6 +1000,100 @@ async function buildCoverDocx(parsed = {}, templateKey = 'classic', cover = {}, 
   return Packer.toBuffer(doc);
 }
 
+// Helper: Check and handle subscription expiry
+async function checkAndHandleSubscriptionExpiry(user) {
+  if (!user) return;
+
+  const subscription = await Subscription.findOne({
+    where: { userId: user.id },
+    order: [['createdAt', 'DESC']],
+  });
+
+  if (!subscription) return;
+
+  const now = new Date();
+  const currentPeriodEnd = new Date(subscription.currentPeriodEnd);
+
+  // If subscription has expired, handle based on tier
+  if (currentPeriodEnd < now && (subscription.status === 'active' || subscription.status === 'canceled')) {
+    if (subscription.tier === 'one-time' && user.tier === 'monthly') {
+      // Expire one-time add-on for monthly users
+      subscription.status = 'expired';
+      await subscription.save();
+
+      const usageMetrics = await UsageMetrics.findOne({ where: { userId: user.id } });
+      if (usageMetrics) {
+        const baseLimit = TIER_CONFIG.monthly.generationsLimit || 200;
+        const bonus = usageMetrics.bonusGenerations || 0;
+        usageMetrics.generationsLimit = Math.max(baseLimit, usageMetrics.generationsLimit - bonus);
+        usageMetrics.bonusGenerations = 0;
+        usageMetrics.bonusExpiresAt = null;
+        await usageMetrics.save();
+      }
+
+      console.log(`[Subscription] User ${user.id} one-time add-on expired. Bonus removed.`);
+      return;
+    }
+
+    // Standalone one-time or canceled plan expired -> downgrade to auth-free
+    user.tier = 'auth-free';
+    await user.save();
+
+    // Reset usage metrics to auth-free limits
+    const usageMetrics = await UsageMetrics.findOne({ where: { userId: user.id } });
+    if (usageMetrics) {
+      usageMetrics.generationsUsed = 0;
+      usageMetrics.generationsLimit = TIER_CONFIG['auth-free'].generationsLimit;
+      usageMetrics.currentJobCount = 0;
+      usageMetrics.maxJobCount = TIER_CONFIG['auth-free'].jobsPerSession;
+      usageMetrics.resetDate = now;
+      usageMetrics.bonusGenerations = 0;
+      usageMetrics.bonusExpiresAt = null;
+      await usageMetrics.save();
+    }
+
+    console.log(`[Subscription] User ${user.id} one-time plan expired. Downgraded to auth-free.`);
+  }
+}
+
+// Helper: Apply one-time bonus for monthly users (and expire when needed)
+async function applyMonthlyBonus(user, usageMetrics) {
+  if (!user || !usageMetrics) return usageMetrics;
+  if (user.tier !== 'monthly') return usageMetrics;
+
+  const baseLimit = TIER_CONFIG.monthly.generationsLimit || 200;
+  const bonus = Math.min(50, usageMetrics.bonusGenerations || 0);
+  const bonusExpiry = usageMetrics.bonusExpiresAt ? new Date(usageMetrics.bonusExpiresAt) : null;
+  const now = new Date();
+
+  if (bonus > 0 && bonusExpiry && bonusExpiry < now) {
+    usageMetrics.bonusGenerations = 0;
+    usageMetrics.bonusExpiresAt = null;
+    usageMetrics.generationsLimit = baseLimit;
+    await usageMetrics.save();
+    return usageMetrics;
+  }
+
+  if (usageMetrics.bonusGenerations !== bonus) {
+    usageMetrics.bonusGenerations = bonus;
+  }
+
+  if (usageMetrics.generationsLimit !== baseLimit) {
+    usageMetrics.generationsLimit = baseLimit;
+  }
+
+  if ((bonus <= 0 || !bonusExpiry) && usageMetrics.bonusGenerations !== 0) {
+    usageMetrics.bonusGenerations = 0;
+    usageMetrics.bonusExpiresAt = null;
+  }
+
+  if (usageMetrics.changed()) {
+    await usageMetrics.save();
+  }
+
+  return usageMetrics;
+}
+
 // Upload and parse endpoint
 app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (req, res) => {
   let filePath = null;
@@ -978,6 +1120,54 @@ app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (
       if (!user || !usageMetrics) {
         return res.status(404).json({ error: 'User not found' });
       }
+
+      // Check and handle subscription expiry
+      await checkAndHandleSubscriptionExpiry(user);
+
+      await applyMonthlyBonus(user, usageMetrics);
+
+      // Ensure usage limits match current tier config
+      const tierConfig = TIER_CONFIG[user.tier] || TIER_CONFIG['auth-free'] || TIER_CONFIG.free;
+      let usageNeedsSave = false;
+
+      if (usageMetrics.generationsLimit !== tierConfig.generationsLimit) {
+        usageMetrics.generationsLimit = tierConfig.generationsLimit;
+        usageNeedsSave = true;
+      }
+
+      if (usageMetrics.maxJobCount !== tierConfig.jobsPerSession) {
+        usageMetrics.maxJobCount = tierConfig.jobsPerSession;
+        usageNeedsSave = true;
+      }
+
+      if (usageMetrics.currentJobCount !== 0) {
+        usageMetrics.currentJobCount = 0;
+        usageNeedsSave = true;
+      }
+
+      if (!usageMetrics.resetDate) {
+        usageMetrics.resetDate = new Date();
+        usageNeedsSave = true;
+      }
+
+      if (usageNeedsSave) {
+        await usageMetrics.save();
+      }
+
+      // Check if monthly reset is needed for auth-free tier
+      if (user.tier === 'auth-free' && usageMetrics.resetDate) {
+        const lastReset = new Date(usageMetrics.resetDate);
+        const today = new Date();
+        const monthsDiff = (today.getFullYear() - lastReset.getFullYear()) * 12 + (today.getMonth() - lastReset.getMonth());
+        
+        if (monthsDiff >= 1) {
+          // Reset the counter
+          console.log(`[/api/upload] Resetting counter for user ${req.userId} due to monthly reset`);
+          usageMetrics.generationsUsed = 0;
+          usageMetrics.resetDate = new Date();
+          await usageMetrics.save();
+        }
+      }
     } else {
       // Anonymous user - track by IP
       const ipAddress = getClientIp(req);
@@ -990,7 +1180,8 @@ app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (
     }
 
     // Check if user has generations remaining
-    const remaining = usageMetrics.generationsLimit - usageMetrics.generationsUsed;
+    const bonusRemaining = user?.tier === 'monthly' ? (usageMetrics.bonusGenerations || 0) : 0;
+    const remaining = (usageMetrics.generationsLimit - usageMetrics.generationsUsed) + bonusRemaining;
     if (remaining <= 0) {
       const tier = user?.tier || 'free';
       const resetInfo = isAnonymous ? 'Resets in 24 hours' : 'Sign in with Google for 6 generations per month';
@@ -1062,16 +1253,8 @@ app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (
       fs.unlinkSync(filePath);
     }
 
-    // Increment usage counter
-    if (isAnonymous && anonymousUsage) {
-      // Anonymous user - increment IP-based counter
-      anonymousUsage.generationsUsed += 1;
-      await anonymousUsage.save();
-    } else if (usageMetrics && usageMetrics.save) {
-      // Authenticated user - increment database counter
-      usageMetrics.generationsUsed += 1;
-      await usageMetrics.save();
-    }
+    // Note: Usage counter is incremented in /api/tailor for each job, not here
+    // This way each job tailoring counts as 1 generation
 
     // Normalize the parsed data to a stable schema to protect the UI
     const normalizedParsed = {
@@ -1203,8 +1386,11 @@ app.post('/api/tailor', optionalAuthMiddleware, async (req, res) => {
     // Check user tier and usage limits
     let user = null;
     let usageMetrics = null;
+    let anonymousUsage = null;
+    let isAnonymous = !req.userId;
 
     if (req.userId) {
+      // Authenticated user
       user = await User.findByPk(req.userId);
       usageMetrics = await UsageMetrics.findOne({
         where: { userId: req.userId },
@@ -1214,10 +1400,33 @@ app.post('/api/tailor', optionalAuthMiddleware, async (req, res) => {
       if (!user || !usageMetrics) {
         return res.status(404).json({ error: 'User not found' });
       }
+
+      // Check and handle subscription expiry
+      await checkAndHandleSubscriptionExpiry(user);
+
+      // Check if monthly reset is needed for auth-free tier
+      if (user.tier === 'auth-free' && usageMetrics.resetDate) {
+        const lastReset = new Date(usageMetrics.resetDate);
+        const today = new Date();
+        const monthsDiff = (today.getFullYear() - lastReset.getFullYear()) * 12 + (today.getMonth() - lastReset.getMonth());
+        
+        console.log(`[/api/tailor] Monthly reset check for user ${req.userId}: lastReset=${lastReset.toISOString()}, today=${today.toISOString()}, monthsDiff=${monthsDiff}, generationsUsed=${usageMetrics.generationsUsed}`);
+        
+        if (monthsDiff >= 1) {
+          // Reset the counter
+          console.log(`[/api/tailor] Resetting counter for user ${req.userId} due to monthly reset`);
+          usageMetrics.generationsUsed = 0;
+          usageMetrics.resetDate = new Date();
+          await usageMetrics.save();
+        }
+      }
     } else {
-      // Anonymous user uses free tier limits
+      // Anonymous user - track by IP
+      const ipAddress = getClientIp(req);
+      anonymousUsage = await getAnonymousUsage(ipAddress);
+      
       usageMetrics = {
-        generationsUsed: 0,
+        generationsUsed: anonymousUsage.generationsUsed,
         generationsLimit: TIER_CONFIG.free.generationsLimit,
         currentJobCount: 0,
         maxJobCount: TIER_CONFIG.free.jobsPerSession,
@@ -1227,9 +1436,12 @@ app.post('/api/tailor', optionalAuthMiddleware, async (req, res) => {
     // Check if user has generations remaining
     const remaining = usageMetrics.generationsLimit - usageMetrics.generationsUsed;
     if (remaining <= 0) {
+      const tier = user?.tier || 'free';
+      const resetInfo = isAnonymous ? 'Resets in 24 hours' : 'Sign in with Google for 6 generations per month';
+      
       return res.status(402).json({
         success: false,
-        error: 'Generation limit reached. Please upgrade your plan.',
+        error: `Generation limit reached. ${resetInfo}`,
         tier: user?.tier || 'free',
         remaining: 0,
         limit: usageMetrics.generationsLimit,
@@ -1290,28 +1502,116 @@ app.post('/api/tailor', optionalAuthMiddleware, async (req, res) => {
     }
 
     // Increment usage counters
-    if (usageMetrics && usageMetrics.save) {
-      usageMetrics.generationsUsed += 1;
+    if (isAnonymous && anonymousUsage) {
+      // Anonymous user - increment IP-based counter
+      console.log(`[/api/tailor] BEFORE increment - Anonymous: generationsUsed=${anonymousUsage.generationsUsed}`);
+      anonymousUsage.generationsUsed += 1;
+      await anonymousUsage.save();
+      console.log(`[/api/tailor] AFTER increment - Anonymous: generationsUsed=${anonymousUsage.generationsUsed}`);
+    } else if (usageMetrics && usageMetrics.save) {
+      // Authenticated user - increment database counter
+      console.log(`[/api/tailor] BEFORE increment - Auth: generationsUsed=${usageMetrics.generationsUsed}, generationsLimit=${usageMetrics.generationsLimit}`);
+      if (user?.tier === 'monthly' && usageMetrics.bonusGenerations > 0) {
+        // Consume bonus first so monthly allowance remains untouched until bonus is exhausted.
+        usageMetrics.bonusGenerations = Math.max(0, usageMetrics.bonusGenerations - 1);
+      } else {
+        usageMetrics.generationsUsed += 1;
+      }
       usageMetrics.currentJobCount += 1;
       await usageMetrics.save();
+      console.log(`[/api/tailor] AFTER increment - Auth: generationsUsed=${usageMetrics.generationsUsed}, generationsLimit=${usageMetrics.generationsLimit}`);
+
+      // Check if warning email should be sent
+      if (user && user.email) {
+        const remaining = (usageMetrics.generationsLimit - usageMetrics.generationsUsed) + (user?.tier === 'monthly' ? (usageMetrics.bonusGenerations || 0) : 0);
+        const subscription = await Subscription.findOne({
+          where: { userId: user.id },
+          order: [['createdAt', 'DESC']],
+        });
+
+        // Send email if remaining === 10
+        if (remaining === 10) {
+          const lastWarning = usageMetrics.lastWarningEmailSent ? new Date(usageMetrics.lastWarningEmailSent) : null;
+          const now = new Date();
+          const hoursSinceLastWarning = lastWarning ? (now - lastWarning) / (1000 * 60 * 60) : 24;
+
+          if (hoursSinceLastWarning >= 24) {
+            await sendWarningEmail(user, 'low-generations', {
+              remaining: remaining,
+              actionUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/?upgrade=1`,
+            });
+            usageMetrics.lastWarningEmailSent = now;
+            await usageMetrics.save();
+          }
+        }
+
+        // Send email if one-time/cancelled plan has 1 day left
+        if (subscription && (subscription.tier === 'one-time' || subscription.status === 'canceled')) {
+          const currentPeriodEnd = new Date(subscription.currentPeriodEnd);
+          const now = new Date();
+          const msUntilExpiry = currentPeriodEnd - now;
+          const daysUntilExpiry = Math.ceil(msUntilExpiry / (1000 * 60 * 60 * 24));
+
+          if (daysUntilExpiry === 1) {
+            const lastWarning = usageMetrics.lastWarningEmailSent ? new Date(usageMetrics.lastWarningEmailSent) : null;
+            const hoursSinceLastWarning = lastWarning ? (now - lastWarning) / (1000 * 60 * 60) : 24;
+
+            if (hoursSinceLastWarning >= 24) {
+              const emailType = subscription.status === 'canceled' ? 'subscription-cancelled' : 'expiration-soon';
+              await sendWarningEmail(user, emailType, {
+                daysLeft: 1,
+                actionUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/?upgrade=1`,
+              });
+              usageMetrics.lastWarningEmailSent = now;
+              await usageMetrics.save();
+            }
+          }
+        }
+      }
     }
 
     console.log(`[/api/tailor] Sending response with success=true`);
     
-    const updatedRemaining = Math.max(0, (usageMetrics.generationsLimit || TIER_CONFIG.free.generationsLimit) - (usageMetrics.generationsUsed || 0));
-    const updatedJobsRemaining = Math.max(0, (usageMetrics.maxJobCount || TIER_CONFIG.free.jobsPerSession) - (usageMetrics.currentJobCount || 0));
+    const finalUsed = isAnonymous ? anonymousUsage.generationsUsed : usageMetrics.generationsUsed;
+    const finalLimit = isAnonymous ? TIER_CONFIG.free.generationsLimit : usageMetrics.generationsLimit;
+    const baseRemaining = Math.max(0, finalLimit - finalUsed);
+    const bonusRemaining = isAnonymous ? 0 : (usageMetrics.bonusGenerations || 0);
+    const updatedRemaining = Math.max(0, baseRemaining + bonusRemaining);
+    const updatedJobsRemaining = isAnonymous ? 0 : Math.max(0, (usageMetrics.maxJobCount || TIER_CONFIG.free.jobsPerSession) - (usageMetrics.currentJobCount || 0));
+
+    console.log(`[/api/tailor] Response calculation: finalUsed=${finalUsed}, finalLimit=${finalLimit}, updatedRemaining=${updatedRemaining}, tier=${user?.tier || 'free'}`);
+
+    // Determine if warning should be shown
+    let warning = null;
+    let warningMessage = null;
+    if (user && !isAnonymous) {
+      if (updatedRemaining === 10) {
+        warning = true;
+        warningMessage = `You have only ${updatedRemaining} generations remaining.`;
+      } else if (updatedRemaining <= 10 && updatedRemaining > 0) {
+        warning = true;
+        warningMessage = `You have only ${updatedRemaining} generation${updatedRemaining > 1 ? 's' : ''} remaining.`;
+      }
+    }
 
     res.json({
       success: true,
       tailored: tailoredResume || null,
       coverLetter: coverLetter || null,
+      warning: warning,
+      warningMessage: warningMessage,
       usage: {
-        used: usageMetrics.generationsUsed || 1,
-        limit: usageMetrics.generationsLimit || TIER_CONFIG.free.generationsLimit,
+        used: finalUsed,
+        limit: finalLimit,
+        baseRemaining,
         remaining: updatedRemaining,
-        jobsUsed: usageMetrics.currentJobCount || 1,
-        jobsLimit: usageMetrics.maxJobCount || TIER_CONFIG.free.jobsPerSession,
+        jobsUsed: isAnonymous ? 0 : (usageMetrics.currentJobCount || 1),
+        jobsLimit: isAnonymous ? TIER_CONFIG.free.jobsPerSession : (usageMetrics.maxJobCount || TIER_CONFIG.free.jobsPerSession),
         jobsRemaining: updatedJobsRemaining,
+        tier: user?.tier || 'free',
+        resetInfo: isAnonymous ? 'daily' : 'monthly',
+        bonusGenerations: isAnonymous ? 0 : (usageMetrics.bonusGenerations || 0),
+        bonusExpiresAt: isAnonymous ? null : (usageMetrics.bonusExpiresAt || null),
       },
     });
   } catch (error) {
@@ -1526,6 +1826,11 @@ app.get('/api/usage', optionalAuthMiddleware, async (req, res) => {
     let limit = 3;
     let tier = 'free';
     let resetInfo = 'daily';
+    let jobsUsed = 0;
+    let jobsLimit = TIER_CONFIG.free.jobsPerSession;
+    let bonusGenerations = 0;
+    let bonusExpiresAt = null;
+    let bonusDaysLeft = null;
 
     if (req.userId) {
       // Authenticated user
@@ -1535,35 +1840,84 @@ app.get('/api/usage', optionalAuthMiddleware, async (req, res) => {
         order: [['createdAt', 'DESC']],
       });
 
+      console.log(`[/api/usage] User ${req.userId}: found usageMetrics=${!!usageMetrics}, tier=${user?.tier}`);
+
       if (user && usageMetrics) {
+        await applyMonthlyBonus(user, usageMetrics);
         tier = user.tier;
-        used = usageMetrics.generationsUsed;
-        limit = TIER_CONFIG[tier]?.generationsLimit || 6;
+        limit = usageMetrics.generationsLimit || TIER_CONFIG[tier]?.generationsLimit || 6;
         resetInfo = tier === 'auth-free' ? 'monthly' : 'monthly';
+        
+        // Check if monthly reset is needed for auth-free tier
+        if (tier === 'auth-free' && usageMetrics.resetDate) {
+          const lastReset = new Date(usageMetrics.resetDate);
+          const today = new Date();
+          const monthsDiff = (today.getFullYear() - lastReset.getFullYear()) * 12 + (today.getMonth() - lastReset.getMonth());
+          
+          console.log(`[/api/usage] Monthly reset check for user ${req.userId}: lastReset=${lastReset.toISOString()}, today=${today.toISOString()}, monthsDiff=${monthsDiff}, generationsUsed=${usageMetrics.generationsUsed}`);
+          
+          if (monthsDiff >= 1) {
+            // Reset the counter
+            console.log(`[/api/usage] Resetting counter for user ${req.userId} due to monthly reset`);
+            usageMetrics.generationsUsed = 0;
+            usageMetrics.resetDate = new Date();
+            await usageMetrics.save();
+          }
+        }
+        
+        used = usageMetrics.generationsUsed;
+        jobsUsed = usageMetrics.currentJobCount || 0;
+        jobsLimit = usageMetrics.maxJobCount || TIER_CONFIG[tier]?.jobsPerSession || TIER_CONFIG.free.jobsPerSession;
+
+        bonusGenerations = usageMetrics.bonusGenerations || 0;
+        bonusExpiresAt = usageMetrics.bonusExpiresAt || null;
+        if (bonusGenerations > 0 && bonusExpiresAt) {
+          const now = new Date();
+          const expiry = new Date(bonusExpiresAt);
+          const daysLeft = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
+          bonusDaysLeft = daysLeft > 0 ? daysLeft : 0;
+        }
       }
     } else {
       // Anonymous user - check by IP
       const ipAddress = getClientIp(req);
       const anonymousUsage = await getAnonymousUsage(ipAddress);
       
+      console.log(`[/api/usage] Anonymous user IP=${ipAddress}: used=${anonymousUsage.generationsUsed}`);
+      
       used = anonymousUsage.generationsUsed;
       limit = TIER_CONFIG.free.generationsLimit;
       tier = 'free';
       resetInfo = 'daily';
+      jobsUsed = 0;
+      jobsLimit = TIER_CONFIG.free.jobsPerSession;
     }
 
-    const remaining = Math.max(0, limit - used);
+    const baseRemaining = Math.max(0, limit - used);
+    const remaining = Math.max(0, baseRemaining + (tier === 'monthly' ? (bonusGenerations || 0) : 0));
+
+    console.log(`[/api/usage] Response: used=${used}, limit=${limit}, baseRemaining=${baseRemaining}, remaining=${remaining}, tier=${tier}`);
+
+    const jobsRemaining = Math.max(0, jobsLimit - jobsUsed);
 
     res.json({
       used,
       limit,
+      baseRemaining,
       remaining,
       tier,
       resetInfo,
+      jobsUsed,
+      jobsLimit,
+      jobsRemaining,
+      bonusGenerations,
+      bonusExpiresAt,
+      bonusDaysLeft,
     });
   } catch (error) {
     console.error('[Usage] Error:', error);
-    res.status(500).json({ error: 'Failed to get usage stats' });
+    console.error('[Usage] Error details:', error.message, error.stack);
+    res.status(500).json({ error: 'Failed to get usage stats', details: error.message });
   }
 });
 
@@ -1577,8 +1931,366 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Resume Rocket API is running' });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Resume Rocket API is running' });
+// DEVELOPMENT ONLY: Reset all usage for testing
+app.post('/api/dev/reset-usage', async (req, res) => {
+  try {
+    console.log('[/api/dev/reset-usage] Resetting all usage metrics...');
+    
+    // Get all users
+    const users = await User.findAll();
+    console.log(`[/api/dev/reset-usage] Found ${users.length} users`);
+    
+    // For each user, delete extra UsageMetrics records and keep only 1
+    for (const user of users) {
+      const usageRecords = await UsageMetrics.findAll({
+        where: { userId: user.id },
+        order: [['createdAt', 'DESC']],
+      });
+      
+      console.log(`[/api/dev/reset-usage] User ${user.id} has ${usageRecords.length} usage records`);
+      
+      if (usageRecords.length > 1) {
+        // Keep the latest one, delete the rest
+        const latestId = usageRecords[0].id;
+        const toDelete = usageRecords.slice(1).map(r => r.id);
+        
+        await UsageMetrics.destroy({
+          where: { id: toDelete }
+        });
+        console.log(`[/api/dev/reset-usage] Deleted ${toDelete.length} duplicate records for user ${user.id}`);
+      }
+      
+      // Reset the remaining (or only) record
+      if (usageRecords.length > 0) {
+        const latestRecord = usageRecords[0];
+        latestRecord.generationsUsed = 0;
+        latestRecord.resetDate = new Date();
+        latestRecord.currentJobCount = 0;
+        await latestRecord.save();
+        console.log(`[/api/dev/reset-usage] Reset record for user ${user.id}`);
+      }
+    }
+    
+    // Reset all AnonymousUsage (IP-tracked users)
+    await AnonymousUsage.update(
+      { generationsUsed: 0, lastResetDate: new Date() },
+      { where: {} }
+    );
+    console.log('[/api/dev/reset-usage] Reset all AnonymousUsage');
+    
+    res.json({ 
+      success: true, 
+      message: 'All usage metrics have been reset and duplicates removed',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[/api/dev/reset-usage] Error:', error);
+    res.status(500).json({ error: 'Failed to reset usage metrics', details: error.message });
+  }
+});
+
+// DEVELOPMENT ONLY: Reset all subscription/status data for testing
+app.post('/api/dev/reset-statuses', async (req, res) => {
+  try {
+    console.log('[/api/dev/reset-statuses] Resetting user tiers, subscriptions, and usage...');
+
+    await Subscription.destroy({ where: {} });
+    console.log('[/api/dev/reset-statuses] Cleared subscriptions');
+
+    const users = await User.findAll();
+    console.log(`[/api/dev/reset-statuses] Found ${users.length} users`);
+
+    for (const user of users) {
+      const nextTier = user.googleId ? 'auth-free' : 'free';
+      user.tier = nextTier;
+      await user.save();
+
+      const tierConfig = TIER_CONFIG[nextTier] || TIER_CONFIG.free;
+      const [usageMetrics] = await UsageMetrics.findOrCreate({
+        where: { userId: user.id },
+        defaults: {
+          generationsUsed: 0,
+          generationsLimit: tierConfig.generationsLimit,
+          currentJobCount: 0,
+          maxJobCount: tierConfig.jobsPerSession,
+          resetDate: new Date(),
+          lastWarningEmailSent: null,
+        },
+      });
+
+      usageMetrics.generationsUsed = 0;
+      usageMetrics.generationsLimit = tierConfig.generationsLimit;
+      usageMetrics.currentJobCount = 0;
+      usageMetrics.maxJobCount = tierConfig.jobsPerSession;
+      usageMetrics.resetDate = new Date();
+      usageMetrics.lastWarningEmailSent = null;
+      await usageMetrics.save();
+    }
+
+    await AnonymousUsage.update(
+      { generationsUsed: 0, lastResetDate: new Date() },
+      { where: {} }
+    );
+
+    res.json({
+      success: true,
+      message: 'All user tiers, subscriptions, and usage have been reset',
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('[/api/dev/reset-statuses] Error:', error);
+    res.status(500).json({ error: 'Failed to reset statuses', details: error.message });
+  }
+});
+
+// DEVELOPMENT ONLY: Seed a user's plan state for testing
+app.post('/api/dev/seed-plan', async (req, res) => {
+  try {
+    const { email, plan } = req.body || {};
+    if (!email || !plan) {
+      return res.status(400).json({ error: 'Provide email and plan (monthly|one-time|both)' });
+    }
+
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const now = new Date();
+    const monthlyEnd = new Date(now);
+    monthlyEnd.setDate(monthlyEnd.getDate() + 30);
+    const oneTimeEnd = new Date(now);
+    oneTimeEnd.setDate(oneTimeEnd.getDate() + 5);
+
+    await Subscription.destroy({ where: { userId: user.id } });
+
+    const [usageMetrics] = await UsageMetrics.findOrCreate({
+      where: { userId: user.id },
+      defaults: {
+        generationsUsed: 0,
+        generationsLimit: 0,
+        currentJobCount: 0,
+        maxJobCount: 0,
+        resetDate: now,
+        bonusGenerations: 0,
+        bonusExpiresAt: null,
+      },
+    });
+
+    if (plan === 'monthly') {
+      user.tier = 'monthly';
+      await user.save();
+
+      usageMetrics.generationsUsed = 0;
+      usageMetrics.generationsLimit = TIER_CONFIG.monthly.generationsLimit;
+      usageMetrics.currentJobCount = 0;
+      usageMetrics.maxJobCount = TIER_CONFIG.monthly.jobsPerSession;
+      usageMetrics.resetDate = now;
+      usageMetrics.bonusGenerations = 0;
+      usageMetrics.bonusExpiresAt = null;
+      await usageMetrics.save();
+
+      await Subscription.create({
+        userId: user.id,
+        tier: 'monthly',
+        status: 'active',
+        currentPeriodStart: now,
+        currentPeriodEnd: monthlyEnd,
+      });
+    } else if (plan === 'one-time') {
+      user.tier = 'one-time';
+      await user.save();
+
+      usageMetrics.generationsUsed = 0;
+      usageMetrics.generationsLimit = TIER_CONFIG['one-time'].generationsLimit;
+      usageMetrics.currentJobCount = 0;
+      usageMetrics.maxJobCount = TIER_CONFIG['one-time'].jobsPerSession;
+      usageMetrics.resetDate = now;
+      usageMetrics.bonusGenerations = 0;
+      usageMetrics.bonusExpiresAt = null;
+      await usageMetrics.save();
+
+      await Subscription.create({
+        userId: user.id,
+        tier: 'one-time',
+        status: 'active',
+        currentPeriodStart: now,
+        currentPeriodEnd: oneTimeEnd,
+      });
+    } else if (plan === 'both') {
+      user.tier = 'monthly';
+      await user.save();
+
+      usageMetrics.generationsUsed = 0;
+      usageMetrics.generationsLimit = TIER_CONFIG.monthly.generationsLimit + 50;
+      usageMetrics.currentJobCount = 0;
+      usageMetrics.maxJobCount = TIER_CONFIG.monthly.jobsPerSession;
+      usageMetrics.resetDate = now;
+      usageMetrics.bonusGenerations = 50;
+      usageMetrics.bonusExpiresAt = oneTimeEnd;
+      await usageMetrics.save();
+
+      await Subscription.create({
+        userId: user.id,
+        tier: 'monthly',
+        status: 'active',
+        currentPeriodStart: now,
+        currentPeriodEnd: monthlyEnd,
+      });
+
+      await Subscription.create({
+        userId: user.id,
+        tier: 'one-time',
+        status: 'active',
+        currentPeriodStart: now,
+        currentPeriodEnd: oneTimeEnd,
+      });
+    } else {
+      return res.status(400).json({ error: 'Invalid plan. Use monthly, one-time, or both.' });
+    }
+
+    res.json({
+      success: true,
+      userId: user.id,
+      tier: user.tier,
+      plan,
+    });
+  } catch (error) {
+    console.error('[/api/dev/seed-plan] Error:', error);
+    res.status(500).json({ error: 'Failed to seed plan', details: error.message });
+  }
+});
+
+// DEVELOPMENT ONLY: Reset a single user for testing
+app.post('/api/dev/reset-user', async (req, res) => {
+  try {
+    const { email, userId } = req.body || {};
+    if (!email && !userId) {
+      return res.status(400).json({ error: 'Provide email or userId' });
+    }
+
+    const user = await User.findOne({
+      where: email ? { email } : { id: userId },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    await Subscription.destroy({ where: { userId: user.id } });
+
+    const nextTier = user.googleId ? 'auth-free' : 'free';
+    user.tier = nextTier;
+    await user.save();
+
+    const tierConfig = TIER_CONFIG[nextTier] || TIER_CONFIG.free;
+    const [usageMetrics] = await UsageMetrics.findOrCreate({
+      where: { userId: user.id },
+      defaults: {
+        generationsUsed: 0,
+        generationsLimit: tierConfig.generationsLimit,
+        currentJobCount: 0,
+        maxJobCount: tierConfig.jobsPerSession,
+        resetDate: new Date(),
+        lastWarningEmailSent: null,
+      },
+    });
+
+    usageMetrics.generationsUsed = 0;
+    usageMetrics.generationsLimit = tierConfig.generationsLimit;
+    usageMetrics.currentJobCount = 0;
+    usageMetrics.maxJobCount = tierConfig.jobsPerSession;
+    usageMetrics.resetDate = new Date();
+    usageMetrics.lastWarningEmailSent = null;
+    await usageMetrics.save();
+
+    res.json({
+      success: true,
+      message: 'User reset complete',
+      userId: user.id,
+      tier: user.tier,
+    });
+  } catch (error) {
+    console.error('[/api/dev/reset-user] Error:', error);
+    res.status(500).json({ error: 'Failed to reset user', details: error.message });
+  }
+});
+
+// DEVELOPMENT ONLY: Inspect Stripe + DB subscription info for a user
+app.post('/api/dev/inspect-subscription', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) {
+      return res.status(400).json({ error: 'Provide email' });
+    }
+
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const dbSubscriptions = await Subscription.findAll({
+      where: { userId: user.id },
+      order: [['createdAt', 'DESC']],
+    });
+
+    let stripeSummary = null;
+    if (stripe) {
+      const customers = await stripe.customers.list({ email, limit: 3 });
+      const customerIds = customers.data.map((c) => c.id);
+
+      const subscriptions = [];
+      const subscriptionDetails = [];
+      for (const customerId of customerIds) {
+        const subs = await stripe.subscriptions.list({
+          customer: customerId,
+          status: 'all',
+          limit: 10,
+        });
+        subscriptions.push(...subs.data);
+        for (const sub of subs.data) {
+          try {
+            const detail = await stripe.subscriptions.retrieve(sub.id);
+            subscriptionDetails.push({
+              id: detail.id,
+              status: detail.status,
+              cancel_at_period_end: detail.cancel_at_period_end,
+              current_period_start: detail.current_period_start,
+              current_period_end: detail.current_period_end,
+              created: detail.created,
+            });
+          } catch (detailError) {
+            subscriptionDetails.push({
+              id: sub.id,
+              error: detailError.message,
+            });
+          }
+        }
+      }
+
+      stripeSummary = {
+        customers: customers.data.map((c) => ({ id: c.id, email: c.email })),
+        subscriptions: subscriptions.map((s) => ({
+          id: s.id,
+          status: s.status,
+          cancel_at_period_end: s.cancel_at_period_end,
+          current_period_start: s.current_period_start,
+          current_period_end: s.current_period_end,
+          created: s.created,
+        })),
+        subscriptionDetails,
+      };
+    }
+
+    res.json({
+      user: { id: user.id, email: user.email, tier: user.tier },
+      dbSubscriptions,
+      stripe: stripeSummary,
+    });
+  } catch (error) {
+    console.error('[/api/dev/inspect-subscription] Error:', error);
+    res.status(500).json({ error: 'Failed to inspect subscription', details: error.message });
+  }
 });
 
 // Start server with database initialization

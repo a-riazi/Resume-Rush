@@ -8,7 +8,7 @@ export default function Navigation({ darkMode = false, onToggleDarkMode = () => 
     <nav className={`main-nav ${darkMode ? 'dark' : ''}`}>
       <div className="nav-container">
         <Link to="/" className="nav-logo">
-          <img src="./Logo.png" alt="Resume Rush Logo" className="nav-logo-img" />
+          <img src="/Logo.png" alt="Resume Rush Logo" className="nav-logo-img" />
           Resume Rush
         </Link>
         <div className="nav-right">
@@ -19,7 +19,9 @@ export default function Navigation({ darkMode = false, onToggleDarkMode = () => 
             <li><Link to="/privacy" className="nav-link">Privacy</Link></li>
             <li><Link to="/terms" className="nav-link">Terms</Link></li>
           </ul>
-          <UserProfile />
+          <Link to="/?upgrade=1" className="nav-upgrade-btn">
+            Upgrade
+          </Link>          <UserProfile />
           <AdsTxtStatus />
           <button
             type="button"

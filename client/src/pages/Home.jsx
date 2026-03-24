@@ -1,8 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useRef, useState, useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import axios from 'axios'
 import '../App.css'
-import AdUnit from '../components/AdUnit'
 import BugReport from '../components/BugReport'
+import PaywallModal from '../components/PaywallModal'
+import JobLimitModal from '../components/JobLimitModal'
+import WarningBanner from '../components/WarningBanner'
 import { useAuth } from '../context/AuthContext'
 
 // Base API URL comes from environment; falls back to localhost for dev or same-origin for production
@@ -102,7 +105,8 @@ function getInitialCheckboxState() {
 }
 
 export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) {
-  const { user, isAuthenticated } = useAuth()
+  const { user, isAuthenticated, subscription } = useAuth()
+  const location = useLocation()
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
@@ -131,6 +135,11 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
   const [generateResume, setGenerateResume] = useState(initialCheckboxState.generateResume)
   const [generateCoverLetter, setGenerateCoverLetter] = useState(initialCheckboxState.generateCoverLetter)
   const [limitToOnePage, setLimitToOnePage] = useState(initialCheckboxState.limitToOnePage)
+  const [showPaywall, setShowPaywall] = useState(false)
+  const [showJobLimitModal, setShowJobLimitModal] = useState(false)
+  const [warningMessage, setWarningMessage] = useState(null)
+  const [jobLimitMessage, setJobLimitMessage] = useState(null)
+  const newJobIdRef = useRef(null)
 
   // Fetch usage stats on mount and after authentication changes
   useEffect(() => {
@@ -139,7 +148,9 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
         const token = localStorage.getItem('auth_token')
         const headers = token ? { Authorization: `Bearer ${token}` } : {}
         
+        console.log('[useEffect] Fetching usage stats, auth token:', !!token)
         const response = await axios.get(`${API_BASE_URL}/api/usage`, { headers })
+        console.log('Usage stats fetched:', response.data)
         setUsageStats(response.data)
       } catch (err) {
         console.error('Failed to fetch usage stats:', err)
@@ -148,6 +159,22 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
 
     fetchUsageStats()
   }, [isAuthenticated, user])
+
+  // Open paywall when user clicks Upgrade in nav
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    if (params.get('upgrade') === '1') {
+      setShowPaywall(true)
+    }
+  }, [location.search])
+
+  useEffect(() => {
+    const maxJobs = usageStats?.jobsLimit || MAX_JOB_DESCRIPTIONS
+    if (jobDescriptions.length > maxJobs) {
+      setJobDescriptions((prev) => prev.slice(0, maxJobs))
+      setJobLimitMessage(`Your plan allows up to ${maxJobs} job descriptions at a time.`)
+    }
+  }, [usageStats?.jobsLimit, jobDescriptions.length])
 
   // Restore persisted state so returning to Home keeps results visible
   useEffect(() => {
@@ -226,6 +253,47 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
   const originalProjectsArray = Array.isArray(result?.projects) ? result.projects : null
   const originalProjectsText = !originalProjectsArray && typeof result?.projects === 'string' ? result.projects : ''
 
+  // Helper function to get countdown text for one-time pass
+  const getCountdownInfo = () => {
+    if (user?.tier === 'one-time' && subscription?.currentPeriodEnd) {
+      const endDate = new Date(subscription.currentPeriodEnd);
+      const now = new Date();
+      const daysLeft = Math.ceil((endDate - now) / (1000 * 60 * 60 * 24));
+      if (daysLeft > 0) {
+        return ` - ${daysLeft} day${daysLeft !== 1 ? 's' : ''} left`;
+      }
+    }
+    return '';
+  };
+
+  // Generate usage display text based on tier
+  const getUsageDisplayText = () => {
+    try {
+      const safeLimit = Number.isFinite(usageStats?.limit) ? usageStats.limit : 0
+      const safeRemaining = Number.isFinite(usageStats?.remaining) ? usageStats.remaining : 0
+      const bonusGenerations = Number.isFinite(usageStats?.bonusGenerations) ? usageStats.bonusGenerations : 0
+      const rawBonusDaysLeft = usageStats?.bonusDaysLeft ?? null
+      const bonusDaysLeft = rawBonusDaysLeft !== null ? Math.min(5, Math.max(0, rawBonusDaysLeft)) : null
+      const baseRemaining = Number.isFinite(usageStats?.baseRemaining)
+        ? usageStats.baseRemaining
+        : safeRemaining
+      const bonusText = bonusGenerations > 0 && bonusDaysLeft !== null
+        ? ` + ${bonusGenerations} bonus (${bonusDaysLeft} day${bonusDaysLeft !== 1 ? 's' : ''} left)`
+        : ''
+
+      if (user?.tier === 'monthly') {
+        return `${baseRemaining} of ${safeLimit} generations remaining this month${bonusText}`
+      }
+      if (user?.tier === 'one-time') {
+        return `${safeRemaining} of ${safeLimit} generations remaining${getCountdownInfo()}`
+      }
+      return `${safeRemaining} of ${safeLimit} generations remaining`
+    } catch (err) {
+      console.error('[Home] Failed to render usage text:', err)
+      return 'Usage information unavailable'
+    }
+  };
+
   const tailoredSummary = jobDescriptions[0]?.results?.tailored?.tailored_summary || jobDescriptions[0]?.results?.tailored?.tailored_objective || ''
   const tailoredSkillsArray = Array.isArray(jobDescriptions[0]?.results?.tailored?.target_skills)
     ? jobDescriptions[0].results.tailored.target_skills
@@ -301,11 +369,36 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
   }
 
   const addNewJobDescription = () => {
-    if (jobDescriptions.length >= MAX_JOB_DESCRIPTIONS) {
-      alert(`Maximum of ${MAX_JOB_DESCRIPTIONS} job descriptions allowed to manage API usage.`)
+    const maxJobs = usageStats?.jobsLimit || MAX_JOB_DESCRIPTIONS
+    const isMaxTier = usageStats?.tier === 'monthly' && maxJobs >= 10
+    if (jobDescriptions.length >= maxJobs) {
+      setShowJobLimitModal(true)
+      setJobLimitMessage(
+        isMaxTier
+          ? `You've reached the maximum of ${maxJobs} concurrent job descriptions for the highest plan.`
+          : `You've reached the maximum of ${maxJobs} concurrent job descriptions for your plan.`
+      )
       return
     }
-    setJobDescriptions([...jobDescriptions, { id: Date.now(), title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }])
+    setJobLimitMessage(null)
+    const newId = Date.now()
+    newJobIdRef.current = newId
+    setJobDescriptions([...jobDescriptions, { id: newId, title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }])
+  }
+
+  const handleAddJobClick = () => {
+    const maxJobs = usageStats?.jobsLimit || MAX_JOB_DESCRIPTIONS
+    const isMaxTier = usageStats?.tier === 'monthly' && maxJobs >= 10
+    if (jobDescriptions.length >= maxJobs) {
+      setShowJobLimitModal(true)
+      setJobLimitMessage(
+        isMaxTier
+          ? `You've reached the maximum of ${maxJobs} concurrent job descriptions for the highest plan.`
+          : `You've reached the maximum of ${maxJobs} concurrent job descriptions for your plan.`
+      )
+      return
+    }
+    addNewJobDescription()
   }
 
   const handleRemoveFile = () => {
@@ -329,6 +422,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
       setError('You must have at least one job description.')
       return
     }
+    setJobLimitMessage(null)
     setJobDescriptions(jobDescriptions.filter(j => j.id !== jobId))
   }
 
@@ -394,6 +488,30 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     setError(null)
 
     try {
+      // Fetch fresh usage stats to ensure accurate limit check
+      let currentUsage = usageStats
+      try {
+        const token = localStorage.getItem('auth_token')
+        const headers = token ? { Authorization: `Bearer ${token}` } : {}
+        const usageResponse = await axios.get(`${API_BASE_URL}/api/usage`, { headers })
+        currentUsage = usageResponse.data
+        console.log('[handleUpload] Fresh usage stats:', currentUsage)
+        setUsageStats(currentUsage)
+      } catch (err) {
+        console.warn('[handleUpload] Failed to fetch fresh usage stats, using cached:', err)
+      }
+
+      // Check if user has generations remaining BEFORE uploading
+      console.log('[handleUpload] Checking usage: remaining=', currentUsage.remaining, 'limit=', currentUsage.limit)
+      if (currentUsage.remaining <= 0) {
+        console.log('[handleUpload] Usage limit reached, showing paywall')
+        setShowPaywall(true)
+        setLoading(false)
+        setError('You have reached your generation limit. Please upgrade your plan.')
+        return
+      }
+
+      console.log('[handleUpload] Usage check passed, proceeding with upload')
       const formData = new FormData()
       formData.append('resume', file)
       formData.append('jobDescription', '')
@@ -416,68 +534,119 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
 
       // Update usage stats after successful upload
       if (parseResponse.data.usage) {
+        console.log('[handleUpload] Updating usage stats from upload response:', parseResponse.data.usage)
         setUsageStats(parseResponse.data.usage)
       }
 
       setResult(parseResponse.data.data)
 
-      const updatedJobs = await Promise.all(
-        jobDescriptions.map(async (job) => {
-          if (!job.description.trim()) {
-            console.log(`[handleUpload] Skipping job ${job.id} - no description`);
-            return job
+      // Process jobs sequentially (not in parallel) to properly track usage between jobs
+      const updatedJobs = []
+      let remainingGenerations = currentUsage.remaining
+      let limitReached = false
+
+      for (const job of jobDescriptions) {
+        if (!job.description.trim()) {
+          console.log(`[handleUpload] Skipping job ${job.id} - no description`)
+          updatedJobs.push(job)
+          continue
+        }
+
+        // Check if we've reached the limit before processing this job
+        if (remainingGenerations <= 0) {
+          console.log(`[handleUpload] Limit reached, stopping job processing`)
+          limitReached = true
+          updatedJobs.push(job)
+          continue
+        }
+
+        try {
+          console.log(`[handleUpload] Processing job ${job.id}: "${job.description.substring(0, 50)}..."`)
+          const tailorPayload = {
+            parsed: parseResponse.data.data,
+            jobDescription: job.description.trim(),
+            generateResume: generateResume,
+            generateCoverLetter: generateCoverLetter,
+            limitToOnePage: limitToOnePage
           }
 
-          try {
-            console.log(`[handleUpload] Processing job ${job.id}: "${job.description.substring(0, 50)}..."`);
-            // Use the faster /api/tailor endpoint for job-specific tailoring
-            const tailorPayload = {
-              parsed: parseResponse.data.data,
-              jobDescription: job.description.trim(),
-              generateResume: generateResume,
-              generateCoverLetter: generateCoverLetter,
-              limitToOnePage: limitToOnePage
+          console.log(`[handleUpload] Sending tailor request for job ${job.id}...`)
+          const jobResponse = await axios.post(`${API_BASE_URL}/api/tailor`, tailorPayload, {
+            headers: {
+              Authorization: localStorage.getItem('auth_token') ? `Bearer ${localStorage.getItem('auth_token')}` : undefined,
+            },
+            timeout: 120000 // 2 minute timeout
+          })
+          console.log(`[handleUpload] Received tailor response for job ${job.id}:`, jobResponse.data)
+
+          const inferredTitle = job.title?.trim() || await inferJobTitle(job.description)
+
+          if (jobResponse.data.success) {
+            // Update usage stats and remaining counter
+            if (jobResponse.data.usage) {
+              setUsageStats(jobResponse.data.usage)
+              remainingGenerations = jobResponse.data.usage.remaining
             }
 
-            console.log(`[handleUpload] Sending tailor request for job ${job.id}...`);
-            const jobResponse = await axios.post(`${API_BASE_URL}/api/tailor`, tailorPayload, {
-              timeout: 120000 // 2 minute timeout
+            // Check for warning message
+            if (jobResponse.data.warning && jobResponse.data.warningMessage) {
+              setWarningMessage(jobResponse.data.warningMessage)
+            }
+
+            updatedJobs.push({
+              ...job,
+              title: inferredTitle || job.title,
+              results: {
+                tailored: jobResponse.data.tailored || null,
+                coverLetter: jobResponse.data.coverLetter || null,
+              },
+              isLoading: false,
+              error: null,
             })
-            console.log(`[handleUpload] Received tailor response for job ${job.id}:`, jobResponse.data);
-
-            const inferredTitle = job.title?.trim() || await inferJobTitle(job.description)
-
-            if (jobResponse.data.success) {
-              return {
-                ...job,
-                title: inferredTitle || job.title,
-                results: {
-                  tailored: jobResponse.data.tailored || null,
-                  coverLetter: jobResponse.data.coverLetter || null,
-                },
-                isLoading: false,
-                error: null,
-              }
-            } else {
-              return {
-                ...job,
-                title: inferredTitle || job.title,
-                isLoading: false,
-                error: 'Failed to tailor for this job',
-              }
-            }
-          } catch (err) {
-            console.error('Tailoring error for job:', err)
-            const inferredTitle = job.title?.trim() || await inferJobTitle(job.description)
-            return {
+          } else {
+            updatedJobs.push({
               ...job,
               title: inferredTitle || job.title,
               isLoading: false,
-              error: err.response?.data?.error || 'Failed to tailor for this job',
-            }
+              error: 'Failed to tailor for this job',
+            })
           }
-        })
-      )
+        } catch (err) {
+          console.error('Tailoring error for job:', err)
+
+          // Check if it's a 402 Payment Required error
+          if (err.response?.status === 402) {
+            console.log('[handleUpload] Hit usage limit (402 error)')
+            if (err.response?.data) {
+              const nextUsage = {
+                used: err.response.data.used !== undefined ? err.response.data.used : usageStats.used,
+                limit: err.response.data.limit || usageStats.limit,
+                remaining: 0,
+                tier: err.response.data.tier || usageStats.tier,
+                resetInfo: usageStats.resetInfo,
+              }
+              setUsageStats(nextUsage)
+              remainingGenerations = 0
+            }
+            setShowPaywall(true)
+            limitReached = true
+            updatedJobs.push(job)
+            continue
+          }
+
+          const inferredTitle = job.title?.trim() || await inferJobTitle(job.description)
+          updatedJobs.push({
+            ...job,
+            title: inferredTitle || job.title,
+            isLoading: false,
+            error: err.response?.data?.error || 'Failed to tailor for this job',
+          })
+        }
+      }
+
+      if (limitReached) {
+        setShowPaywall(true)
+      }
 
       setJobDescriptions(updatedJobs)
       setActiveJobId(updatedJobs[0].id)
@@ -837,12 +1006,17 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
         }}>
           <span>{usageStats.remaining === 0 ? '⚠️' : '✨'}</span>
           <span>
-            {usageStats.remaining} of {usageStats.limit} generations remaining
+            {getUsageDisplayText()}
           </span>
         </div>
       </div>
 
       <div className="container">
+        {/* Warning Banner */}
+        <WarningBanner 
+          message={warningMessage}
+          onClose={() => setWarningMessage(null)}
+        />
         {!result ? (
           <>
             <div className="upload-section">
@@ -962,14 +1136,19 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
             <div className="job-descriptions-section">
               <div className="job-descriptions-header">
                 <h3>Add Job Descriptions</h3>
-                <button onClick={addNewJobDescription} className="btn-secondary add-job-btn">
-                  + Add Job
-                </button>
               </div>
+              {jobLimitMessage && (
+                <div className="job-limit-banner">
+                  <span>⚠️</span>
+                  <p>{jobLimitMessage}</p>
+                  <button type="button" onClick={() => setJobLimitMessage(null)}>×</button>
+                </div>
+              )}
               
               {jobDescriptions.map((job, index) => (
                 <div key={job.id} className="job-input-group">
                   <div className="job-group-header">
+                    <span className="job-slot">#{index + 1}</span>
                     <input
                       type="text"
                       placeholder={`Job title/label (optional)`}
@@ -993,11 +1172,29 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                       placeholder={`Paste job description ${jobDescriptions.length > 1 ? `#${index + 1}` : ''} here`}
                       value={job.description}
                       onChange={(e) => updateJobDescription(job.id, e.target.value)}
+                      ref={(el) => {
+                        if (newJobIdRef.current === job.id && el) {
+                          newJobIdRef.current = null
+                          el.focus()
+                          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                        }
+                      }}
                     />
                     <span className="char-count">{job.description.length} chars</span>
                   </div>
                 </div>
               ))}
+
+              <div className="job-add-row">
+                <button 
+                  onClick={handleAddJobClick} 
+                  className="btn-secondary add-job-btn"
+                  aria-disabled={jobDescriptions.length >= (usageStats?.jobsLimit || MAX_JOB_DESCRIPTIONS)}
+                  title={jobDescriptions.length >= (usageStats?.jobsLimit || MAX_JOB_DESCRIPTIONS) ? `Maximum ${usageStats?.jobsLimit || MAX_JOB_DESCRIPTIONS} jobs allowed` : ''}
+                >
+                  + Add Job
+                </button>
+              </div>
 
               <p className="job-helper">Provide job descriptions to get perfectly tailored resumes and cover letters.</p>
             </div>
@@ -1097,12 +1294,6 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                 {jobDescriptions.map((job, index) => (
                   (job.results.tailored || job.results.coverLetter) && (
                     <>
-                      {/* Ad Unit - Between Jobs (every 2) */}
-                      {index > 0 && index % 2 === 0 && (
-                        <div key={`ad-${job.id}`} style={{ gridColumn: '1 / -1', margin: 0 }}>
-                          <AdUnit slot="1678163652" />
-                        </div>
-                      )}
                       <div key={job.id} className="job-result-block" style={{ gridColumn: '1 / -1' }}>
                       {(() => {
                         const jobLabel = deriveJobLabel(job, index)
@@ -1343,13 +1534,6 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
 
             </div>
 
-            {/* Ad Unit - Bottom of Page */}
-            {jobDescriptions.some(j => j.results.tailored || j.results.coverLetter) && (
-              <div style={{ margin: '40px 0', textAlign: 'center' }}>
-                <AdUnit slot="1678163652" format="horizontal" />
-              </div>
-            )}
-
           </div>
         )}
 
@@ -1377,6 +1561,31 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
             </div>
           </div>
         )}
+
+        {/* Paywall Modal */}
+        {showPaywall && (
+          <PaywallModal 
+            isOpen={showPaywall}
+            onClose={() => setShowPaywall(false)}
+            tier={usageStats.tier}
+            remaining={usageStats.remaining}
+            limit={usageStats.limit}
+            bonusGenerations={usageStats.bonusGenerations}
+            bonusDaysLeft={usageStats.bonusDaysLeft}
+          />
+        )}
+
+        {/* Job Limit Modal */}
+        <JobLimitModal
+          isOpen={showJobLimitModal}
+          onClose={() => setShowJobLimitModal(false)}
+          jobsLimit={usageStats?.jobsLimit || MAX_JOB_DESCRIPTIONS}
+          isMaxTier={usageStats?.tier === 'monthly' && (usageStats?.jobsLimit || MAX_JOB_DESCRIPTIONS) >= 10}
+          onUpgrade={() => {
+            setShowJobLimitModal(false)
+            setShowPaywall(true)
+          }}
+        />
       </div>
       <BugReport />
     </div>

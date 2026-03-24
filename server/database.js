@@ -191,6 +191,18 @@ const UsageMetrics = sequelize.define('UsageMetrics', {
     type: Sequelize.DATE,
     allowNull: true,
   },
+  lastWarningEmailSent: {
+    type: Sequelize.DATE,
+    allowNull: true,
+  },
+  bonusGenerations: {
+    type: Sequelize.INTEGER,
+    defaultValue: 0,
+  },
+  bonusExpiresAt: {
+    type: Sequelize.DATE,
+    allowNull: true,
+  },
   createdAt: {
     type: Sequelize.DATE,
     defaultValue: Sequelize.NOW,
@@ -202,6 +214,13 @@ const UsageMetrics = sequelize.define('UsageMetrics', {
 }, {
   tableName: 'usage_metrics',
   timestamps: true,
+  indexes: [
+    {
+      unique: true,
+      fields: ['userId'],
+      name: 'unique_user_usage_metrics'
+    }
+  ]
 });
 
 // Resumes Model

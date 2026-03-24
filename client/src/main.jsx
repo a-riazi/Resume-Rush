@@ -11,6 +11,7 @@ import Privacy from './pages/Privacy'
 import Terms from './pages/Terms'
 import CheckoutSuccess from './pages/CheckoutSuccess'
 import CheckoutCancel from './pages/CheckoutCancel'
+import BillingPortal from './pages/BillingPortal'
 import ErrorBoundary from './ErrorBoundary.jsx'
 import { AuthProvider } from './context/AuthContext'
 
@@ -47,6 +48,7 @@ function App() {
             <Route path="/terms" element={<Terms darkMode={darkMode} />} />
             <Route path="/checkout/success" element={<CheckoutSuccess />} />
             <Route path="/checkout/cancel" element={<CheckoutCancel />} />
+            <Route path="/account/billing" element={<BillingPortal />} />
           </Routes>
         </Router>
       </AuthProvider>

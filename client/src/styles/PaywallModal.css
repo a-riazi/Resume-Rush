@@ -84,6 +84,38 @@
   font-size: 14px;
 }
 
+.paywall-login {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 10px;
+}
+
+.paywall-login-text {
+  margin: 0;
+  color: #444;
+  font-size: 14px;
+}
+
+/* Style the Google Login button container */
+.paywall-login > div {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.paywall-login > div > div {
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+}
+
+.paywall-login > div > div:hover {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+  transform: translateY(-2px);
+}
+
 .paywall-plans {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -184,11 +216,38 @@
   background: #f0f7ff;
 }
 
+.paywall-google-btn {
+  margin-top: 16px;
+}
+
+.paywall-google-container {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  padding: 8px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.05) 0%, rgba(20, 184, 166, 0.05) 100%);
+  border: 2px solid transparent;
+  transition: all 0.3s ease;
+  margin-top: 16px;
+}
+
+.paywall-google-container:hover {
+  border-color: #14b8a6;
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.1) 0%, rgba(20, 184, 166, 0.1) 100%);
+  box-shadow: 0 4px 16px rgba(20, 184, 166, 0.2);
+}
+
 .paywall-note {
   text-align: center;
   color: #999;
   font-size: 13px;
   margin-top: 30px;
+}
+
+.paywall-google-btn {
+  margin-top: 16px;
 }
 
 @media (max-width: 768px) {

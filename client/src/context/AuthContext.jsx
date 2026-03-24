@@ -39,6 +39,17 @@ export function AuthProvider({ children }) {
     return () => window.removeEventListener('googleLogin', handler);
   }, [token]);
 
+  useEffect(() => {
+    const handleFocus = () => {
+      if (token) {
+        fetchCurrentUser(token);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [token]);
+
   // Fetch current user data
   const fetchCurrentUser = async (authToken) => {
     try {

@@ -192,10 +192,23 @@
   background: #e8e8e8;
 }
 
-@media (max-width: 480px) {
-  .user-profile-trigger {
-    padding: 4px 8px;
-  }
+.manage-subscription-link {
+  display: block;
+  text-align: center;
+  padding: 10px 16px;
+  color: #0f766e;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 14px;
+  border-radius: 6px;
+  transition: background 0.2s;
+  margin-bottom: 8px;
+}
+
+.manage-subscription-link:hover {
+  background: #f0fdf4;
+}
+
 
   .user-name {
     display: none;

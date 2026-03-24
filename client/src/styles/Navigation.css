@@ -171,6 +171,37 @@
   color: #ff9ff0;
 }
 
+.nav-upgrade-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 20px;
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+  color: white;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 14px;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.3);
+}
+
+.nav-upgrade-btn:hover {
+  background: linear-gradient(135deg, #0d5d57 0%, #0f9b8f 100%);
+  box-shadow: 0 6px 16px rgba(15, 118, 110, 0.4);
+  transform: translateY(-2px);
+}
+
+.main-nav.dark .nav-upgrade-btn {
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+  box-shadow: 0 4px 12px rgba(20, 184, 166, 0.3);
+}
+
+.main-nav.dark .nav-upgrade-btn:hover {
+  background: linear-gradient(135deg, #0d5d57 0%, #0f9b8f 100%);
+  box-shadow: 0 6px 16px rgba(20, 184, 166, 0.4);
+}
+
 @media (max-width: 768px) {
   .nav-menu {
     gap: 1rem;
@@ -190,4 +221,7 @@
     justify-content: flex-end;
     margin-top: 0.5rem;
   }
-}
+
+  .nav-upgrade-btn {
+    padding: 8px 16px;
+    font-size: 13px;
