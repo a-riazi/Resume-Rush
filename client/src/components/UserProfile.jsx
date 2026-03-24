@@ -5,7 +5,7 @@ import ThemedGoogleButton from './ThemedGoogleButton';
 import '../styles/UserProfile.css';
 
 export default function UserProfile() {
-  const { user, usage, subscription, logout, isAuthenticated } = useAuth();
+  const { user, usage, subscription, logout, isAuthenticated, loginWithGoogle } = useAuth();
   const [showDropdown, setShowDropdown] = useState(false);
   const [avatarError, setAvatarError] = useState(false);
 
@@ -13,11 +13,19 @@ export default function UserProfile() {
     return (
       <div className="user-profile">
         <ThemedGoogleButton
-          onSuccess={(credentialResponse) => {
-            // Handle login in the parent component (App.jsx or Home.jsx)
-            window.dispatchEvent(new CustomEvent('googleLogin', { detail: credentialResponse }));
+          onSuccess={async (credentialResponse) => {
+            const credential = credentialResponse?.credential;
+            if (!credential) {
+              console.error('Google login failed: missing credential payload');
+              return;
+            }
+
+            const result = await loginWithGoogle(credential);
+            if (!result?.success) {
+              console.error('Google login failed:', result?.error || 'Unknown error');
+            }
           }}
-          onError={() => console.log('Login Failed')}
+          onError={() => console.error('Google login popup failed')}
           label="Login"
           className="compact"
         />

@@ -24,7 +24,7 @@ function getStripePromise() {
 export default function PaywallModal({ isOpen, onClose, tier, remaining, limit, bonusGenerations = 0, bonusDaysLeft = null, onUpgrade }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, loginWithGoogle } = useAuth();
   const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : 'https://api.resumerush.io');
 
   const isOneTime = tier === 'one-time';
@@ -99,8 +99,20 @@ export default function PaywallModal({ isOpen, onClose, tier, remaining, limit, 
           <div className="paywall-login">
             <p className="paywall-login-text">Please log in to upgrade your plan.</p>
             <ThemedGoogleButton
-              onSuccess={(credentialResponse) => {
-                window.dispatchEvent(new CustomEvent('googleLogin', { detail: credentialResponse }));
+              onSuccess={async (credentialResponse) => {
+                const credential = credentialResponse?.credential;
+                if (!credential) {
+                  setError('Google login failed: missing credential payload.');
+                  return;
+                }
+
+                const result = await loginWithGoogle(credential);
+                if (!result?.success) {
+                  setError(result?.error || 'Login failed. Please try again.');
+                  return;
+                }
+
+                setError(null);
               }}
               onError={() => setError('Login failed. Please try again.')}
               label="Login"
