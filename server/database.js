@@ -328,6 +328,22 @@ async function initializeDatabase() {
     await sequelize.sync();
     console.log('✓ Database models synchronized');
 
+    // Backfill legacy/missing columns in older production databases.
+    // Keep this idempotent so startup remains safe across environments.
+    await sequelize.query(`
+      ALTER TABLE usage_metrics
+      ADD COLUMN IF NOT EXISTS "lastWarningEmailSent" TIMESTAMP DEFAULT NULL;
+    `);
+    await sequelize.query(`
+      ALTER TABLE usage_metrics
+      ADD COLUMN IF NOT EXISTS "bonusGenerations" INTEGER DEFAULT 0;
+    `);
+    await sequelize.query(`
+      ALTER TABLE usage_metrics
+      ADD COLUMN IF NOT EXISTS "bonusExpiresAt" TIMESTAMP DEFAULT NULL;
+    `);
+    console.log('✓ Database schema backfill completed');
+
     return { sequelize, User, Subscription, UsageMetrics, Resume, Tailoring, AnonymousUsage };
   } catch (error) {
     console.error('❌ Database initialization failed:', error.message);
