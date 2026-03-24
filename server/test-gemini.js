@@ -7,12 +7,13 @@ async function listModels() {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     
     // Try different model names
-    const modelsToTry = [
-      'gemini-2.0-flash-exp',
-      'gemini-1.5-pro',
-      'gemini-1.5-flash',
-      'gemini-pro'
-    ];
+      const modelsToTry = [
+        process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview',
+        'gemini-2.0-flash-exp',
+        'gemini-1.5-pro',
+        'gemini-1.5-flash',
+        'gemini-pro'
+      ];
     
     for (const modelName of modelsToTry) {
       try {

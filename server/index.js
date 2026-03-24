@@ -6,6 +6,7 @@ const compression = require('compression');
 const nodemailer = require('nodemailer');
 const Stripe = require('stripe');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, UnderlineType } = require('docx');
 const pdf = require('pdf-parse');
 const PDFDocument = require('pdfkit');
@@ -64,7 +65,13 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(compression());
-app.use(express.json());
+const jsonParser = express.json();
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/webhook/stripe') {
+    return next();
+  }
+  return jsonParser(req, res, next);
+});
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -107,6 +114,7 @@ let genAI;
 try {
   genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
   console.log('✓ Gemini API initialized');
+  console.log(`✓ Gemini model: ${GEMINI_MODEL}`);
 } catch (error) {
   console.error('❌ Failed to initialize Gemini API:', error.message);
   process.exit(1);
@@ -192,7 +200,7 @@ async function getAnonymousUsage(ipAddress) {
 
 
 async function inferJobTitleWithGemini(jobDescription) {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
   const prompt = `Extract the job title and company name from the job description below. Return in the format: "Job Title at Company Name" (e.g., "Software Engineer at Google"). If no company is mentioned, return just the job title. Be concise (5-7 words max).\n\nJob description:\n${jobDescription}\n\nReturn the job title with company:`;
 
   const result = await model.generateContent(prompt);
@@ -276,7 +284,7 @@ async function extractText(filePath, mimetype) {
 // Parse resume with Gemini
 async function parseResumeWithGemini(resumeText) {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
     
     const prompt = `You are a resume parser. Analyze the following resume text and extract structured information. Return ONLY valid JSON with no markdown formatting, no code blocks, and no additional text.
 
@@ -338,7 +346,7 @@ Return a JSON object with this exact structure:
 async function tailorResumeWithGemini(parsedResume, jobDescription, limitToOnePage = false) {
   try {
     console.log('[tailorResumeWithGemini] Starting...');
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
     const onePageConstraint = limitToOnePage 
       ? '\n\n⚠️ CRITICAL: The resume MUST fit on ONE PAGE. Maximize content density. Reduce descriptions to 1-2 lines max. Limit each role to 2-3 bullet points max. Eliminate any section that is not essential. Combine skills inline where possible.'
@@ -408,7 +416,7 @@ Rules:
 async function generateCoverLetterWithGemini(parsedResume, jobDescription, limitToOnePage = false) {
   try {
     console.log('[generateCoverLetterWithGemini] Starting...');
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
     
     const resumeSummary = `
 Name: ${parsedResume.name || 'N/A'}
@@ -1931,8 +1939,15 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Resume Rocket API is running' });
 });
 
+const ensureDevOnly = (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  return next();
+};
+
 // DEVELOPMENT ONLY: Reset all usage for testing
-app.post('/api/dev/reset-usage', async (req, res) => {
+app.post('/api/dev/reset-usage', ensureDevOnly, async (req, res) => {
   try {
     console.log('[/api/dev/reset-usage] Resetting all usage metrics...');
     
@@ -1990,7 +2005,7 @@ app.post('/api/dev/reset-usage', async (req, res) => {
 });
 
 // DEVELOPMENT ONLY: Reset all subscription/status data for testing
-app.post('/api/dev/reset-statuses', async (req, res) => {
+app.post('/api/dev/reset-statuses', ensureDevOnly, async (req, res) => {
   try {
     console.log('[/api/dev/reset-statuses] Resetting user tiers, subscriptions, and usage...');
 
@@ -2044,7 +2059,7 @@ app.post('/api/dev/reset-statuses', async (req, res) => {
 });
 
 // DEVELOPMENT ONLY: Seed a user's plan state for testing
-app.post('/api/dev/seed-plan', async (req, res) => {
+app.post('/api/dev/seed-plan', ensureDevOnly, async (req, res) => {
   try {
     const { email, plan } = req.body || {};
     if (!email || !plan) {
@@ -2162,7 +2177,7 @@ app.post('/api/dev/seed-plan', async (req, res) => {
 });
 
 // DEVELOPMENT ONLY: Reset a single user for testing
-app.post('/api/dev/reset-user', async (req, res) => {
+app.post('/api/dev/reset-user', ensureDevOnly, async (req, res) => {
   try {
     const { email, userId } = req.body || {};
     if (!email && !userId) {
@@ -2217,7 +2232,7 @@ app.post('/api/dev/reset-user', async (req, res) => {
 });
 
 // DEVELOPMENT ONLY: Inspect Stripe + DB subscription info for a user
-app.post('/api/dev/inspect-subscription', async (req, res) => {
+app.post('/api/dev/inspect-subscription', ensureDevOnly, async (req, res) => {
   try {
     const { email } = req.body || {};
     if (!email) {
