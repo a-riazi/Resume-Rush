@@ -209,6 +209,7 @@
   background: #f0fdf4;
 }
 
+@media (max-width: 768px) {
 
   .user-name {
     display: none;
