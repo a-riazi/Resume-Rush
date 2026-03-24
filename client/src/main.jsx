@@ -13,7 +13,7 @@ import CheckoutSuccess from './pages/CheckoutSuccess'
 import CheckoutCancel from './pages/CheckoutCancel'
 import BillingPortal from './pages/BillingPortal'
 import ErrorBoundary from './ErrorBoundary.jsx'
-import { AuthProvider } from './context/AuthContext'
+import { AuthProvider } from './context/AuthContext' 
 
 const GOOGLE_CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
