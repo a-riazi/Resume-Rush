@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import '../App.css'
 import BugReport from '../components/BugReport'
@@ -107,6 +107,7 @@ function getInitialCheckboxState() {
 export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) {
   const { user, isAuthenticated, subscription } = useAuth()
   const location = useLocation()
+  const navigate = useNavigate()
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
@@ -167,6 +168,22 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
       setShowPaywall(true)
     }
   }, [location.search])
+
+  useEffect(() => {
+    const handleOpenUpgrade = () => setShowPaywall(true)
+    window.addEventListener('openUpgrade', handleOpenUpgrade)
+    return () => window.removeEventListener('openUpgrade', handleOpenUpgrade)
+  }, [])
+
+  const handleClosePaywall = () => {
+    setShowPaywall(false)
+    const params = new URLSearchParams(location.search)
+    if (params.get('upgrade') === '1') {
+      params.delete('upgrade')
+      const nextSearch = params.toString()
+      navigate({ pathname: location.pathname, search: nextSearch ? `?${nextSearch}` : '' }, { replace: true })
+    }
+  }
 
   useEffect(() => {
     const maxJobs = usageStats?.jobsLimit || MAX_JOB_DESCRIPTIONS
@@ -1566,7 +1583,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
         {showPaywall && (
           <PaywallModal 
             isOpen={showPaywall}
-            onClose={() => setShowPaywall(false)}
+            onClose={handleClosePaywall}
             tier={usageStats.tier}
             remaining={usageStats.remaining}
             limit={usageStats.limit}

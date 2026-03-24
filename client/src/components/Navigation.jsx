@@ -4,6 +4,10 @@ import AdsTxtStatus from './AdsTxtStatus'
 import UserProfile from './UserProfile'
 
 export default function Navigation({ darkMode = false, onToggleDarkMode = () => {} }) {
+  const handleUpgradeClick = () => {
+    window.dispatchEvent(new CustomEvent('openUpgrade'))
+  }
+
   return (
     <nav className={`main-nav ${darkMode ? 'dark' : ''}`}>
       <div className="nav-container">
@@ -19,7 +23,7 @@ export default function Navigation({ darkMode = false, onToggleDarkMode = () => 
             <li><Link to="/privacy" className="nav-link">Privacy</Link></li>
             <li><Link to="/terms" className="nav-link">Terms</Link></li>
           </ul>
-          <Link to="/?upgrade=1" className="nav-upgrade-btn">
+          <Link to="/?upgrade=1" className="nav-upgrade-btn" onClick={handleUpgradeClick}>
             Upgrade
           </Link>          <UserProfile />
           <AdsTxtStatus />
