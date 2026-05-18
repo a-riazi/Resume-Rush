@@ -1030,15 +1030,21 @@ async function checkAndHandleSubscriptionExpiry(user) {
 
   const now = new Date();
   const currentPeriodEnd = new Date(subscription.currentPeriodEnd);
+  const usageMetrics = await UsageMetrics.findOne({ where: { userId: user.id } });
+
+  const monthlyBonusRemaining = user.tier === 'monthly' ? (usageMetrics?.bonusGenerations || 0) : 0;
+  const monthlyBonusExpiry = usageMetrics?.bonusExpiresAt ? new Date(usageMetrics.bonusExpiresAt) : null;
+  const monthlyBonusActive = user.tier === 'monthly'
+    ? monthlyBonusRemaining > 0 && monthlyBonusExpiry && monthlyBonusExpiry > now
+    : false;
 
   // If subscription has expired, handle based on tier
-  if (currentPeriodEnd < now && (subscription.status === 'active' || subscription.status === 'canceled')) {
+  if ((currentPeriodEnd < now || (!monthlyBonusActive && user.tier === 'monthly' && subscription.tier === 'one-time')) && (subscription.status === 'active' || subscription.status === 'canceled')) {
     if (subscription.tier === 'one-time' && user.tier === 'monthly') {
       // Expire one-time add-on for monthly users
       subscription.status = 'expired';
       await subscription.save();
 
-      const usageMetrics = await UsageMetrics.findOne({ where: { userId: user.id } });
       if (usageMetrics) {
         const baseLimit = TIER_CONFIG.monthly.generationsLimit || 200;
         const bonus = usageMetrics.bonusGenerations || 0;
@@ -1049,6 +1055,33 @@ async function checkAndHandleSubscriptionExpiry(user) {
       }
 
       console.log(`[Subscription] User ${user.id} one-time add-on expired. Bonus removed.`);
+      return;
+    }
+
+    if (subscription.tier === 'one-time' && user.tier === 'one-time') {
+      const oneTimeRemaining = Math.max(0, (usageMetrics?.generationsLimit || 0) - (usageMetrics?.generationsUsed || 0));
+      if (currentPeriodEnd >= now && oneTimeRemaining > 0) {
+        return;
+      }
+
+      subscription.status = 'expired';
+      await subscription.save();
+
+      user.tier = 'auth-free';
+      await user.save();
+
+      if (usageMetrics) {
+        usageMetrics.generationsUsed = 0;
+        usageMetrics.generationsLimit = TIER_CONFIG['auth-free'].generationsLimit;
+        usageMetrics.currentJobCount = 0;
+        usageMetrics.maxJobCount = TIER_CONFIG['auth-free'].jobsPerSession;
+        usageMetrics.resetDate = now;
+        usageMetrics.bonusGenerations = 0;
+        usageMetrics.bonusExpiresAt = null;
+        await usageMetrics.save();
+      }
+
+      console.log(`[Subscription] User ${user.id} one-time pass expired by usage or time. Downgraded to auth-free.`);
       return;
     }
 
@@ -1947,6 +1980,91 @@ app.get('/api/usage', optionalAuthMiddleware, async (req, res) => {
     console.error('[Usage] Error:', error);
     console.error('[Usage] Error details:', error.message, error.stack);
     res.status(500).json({ error: 'Failed to get usage stats', details: error.message });
+  }
+});
+
+// Admin middleware - checks if user is admin
+const ensureAdmin = async (req, res, next) => {
+  try {
+    // User must be authenticated first
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized - not logged in' });
+    }
+
+    const user = await User.findByPk(req.userId);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized - user not found' });
+    }
+
+    // Check if user's email matches ADMIN_EMAIL
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (!adminEmail || user.email.toLowerCase() !== adminEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'Forbidden - not an admin' });
+    }
+
+    req.adminUser = user;
+    next();
+  } catch (error) {
+    console.error('[ensureAdmin] Error:', error);
+    res.status(500).json({ error: 'Admin check failed' });
+  }
+};
+
+// Admin: Get all users with their subscription info
+app.get('/api/admin/users', optionalAuthMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const users = await User.findAll({
+      attributes: ['id', 'email', 'name', 'tier', 'createdAt'],
+      order: [['createdAt', 'DESC']],
+    });
+
+    const formattedUsers = await Promise.all(users.map(async (user) => {
+      const usageMetrics = await UsageMetrics.findOne({
+        where: { userId: user.id },
+        order: [['createdAt', 'DESC']],
+      });
+
+      const subscriptions = await Subscription.findAll({
+        where: { userId: user.id },
+        order: [['createdAt', 'DESC']],
+      });
+
+      const monthlySubscription = subscriptions.find((item) => item.tier === 'monthly') || null;
+      const oneTimeSubscription = subscriptions.find((item) => item.tier === 'one-time') || null;
+
+      return {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        userTier: user.tier,
+        signupDate: new Date(user.createdAt).toLocaleDateString('en-US'),
+        generationsUsed: usageMetrics?.generationsUsed || 0,
+        monthlySubscription: monthlySubscription ? {
+          tier: monthlySubscription.tier,
+          status: monthlySubscription.status,
+          stripeSubscriptionId: monthlySubscription.stripeSubscriptionId || null,
+          currentPeriodEnd: monthlySubscription.currentPeriodEnd || null,
+          currentPeriodStart: monthlySubscription.currentPeriodStart || null,
+        } : null,
+        oneTimeSubscription: oneTimeSubscription ? {
+          tier: oneTimeSubscription.tier,
+          status: oneTimeSubscription.status,
+          stripeSubscriptionId: oneTimeSubscription.stripeSubscriptionId || null,
+          currentPeriodEnd: oneTimeSubscription.currentPeriodEnd || null,
+          currentPeriodStart: oneTimeSubscription.currentPeriodStart || null,
+        } : null,
+        hasMonthly: !!monthlySubscription,
+        hasOneTime: !!oneTimeSubscription,
+      };
+    }));
+
+    res.json({
+      totalUsers: formattedUsers.length,
+      users: formattedUsers,
+    });
+  } catch (error) {
+    console.error('[/api/admin/users] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch users', details: error.message });
   }
 });
 

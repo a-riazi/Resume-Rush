@@ -5,7 +5,7 @@ import ThemedGoogleButton from './ThemedGoogleButton';
 import '../styles/UserProfile.css';
 
 export default function UserProfile() {
-  const { user, usage, subscription, logout, isAuthenticated, loginWithGoogle } = useAuth();
+  const { user, usage, subscription, subscriptions, logout, isAuthenticated, loginWithGoogle } = useAuth();
   const [showDropdown, setShowDropdown] = useState(false);
   const [avatarError, setAvatarError] = useState(false);
 
@@ -49,11 +49,13 @@ export default function UserProfile() {
   const bonusGenerations = usage?.bonusGenerations ?? 0;
   const rawBonusDaysLeft = usage?.bonusDaysLeft ?? null;
   const bonusDaysLeft = rawBonusDaysLeft !== null ? Math.min(5, Math.max(0, rawBonusDaysLeft)) : null;
+  const monthlySubscription = subscriptions?.monthly || (subscription?.tier === 'monthly' ? subscription : null);
+  const oneTimeSubscription = subscriptions?.oneTime || (subscription?.tier === 'one-time' ? subscription : null);
 
   // Calculate countdown text for one-time pass
   const getCountdownText = () => {
-    if (user?.tier === 'one-time' && subscription?.currentPeriodEnd) {
-      const endDate = new Date(subscription.currentPeriodEnd);
+    if (oneTimeSubscription?.currentPeriodEnd) {
+      const endDate = new Date(oneTimeSubscription.currentPeriodEnd);
       const now = new Date();
       const daysLeft = Math.ceil((endDate - now) / (1000 * 60 * 60 * 24));
       if (daysLeft > 0) {
@@ -119,16 +121,17 @@ export default function UserProfile() {
             )}
           </div>
 
-          {subscription && ['active', 'canceled'].includes(subscription.status) && subscription.tier === 'monthly' && (
+          {monthlySubscription && (
             <div className="user-dropdown-section">
               <div className="subscription-info">
-                <small>Active Plan</small>
-                <strong>{subscriptionLabel(subscription.tier)}</strong>
+                <small>Monthly Plan</small>
+                <strong>{subscriptionLabel(monthlySubscription.tier)}</strong>
                 <small className="renewal-date">
-                  {subscription.tier === 'one-time'
-                    ? `Expires: ${subscription.currentPeriodEnd ? new Date(subscription.currentPeriodEnd).toLocaleDateString() : 'Unavailable'}`
-                    : `Renews: ${subscription.currentPeriodEnd ? new Date(subscription.currentPeriodEnd).toLocaleDateString() : 'Unavailable'}`}
+                  {monthlySubscription.status === 'canceled'
+                    ? `Expires: ${monthlySubscription.currentPeriodEnd ? new Date(monthlySubscription.currentPeriodEnd).toLocaleDateString() : 'Unavailable'}`
+                    : `Renews: ${monthlySubscription.currentPeriodEnd ? new Date(monthlySubscription.currentPeriodEnd).toLocaleDateString() : 'Unavailable'}`}
                 </small>
+                <small>200 generations per month</small>
               </div>
               <Link 
                 to="/account/billing" 
@@ -137,6 +140,21 @@ export default function UserProfile() {
               >
                 Manage Subscription
               </Link>
+            </div>
+          )}
+
+          {oneTimeSubscription && (
+            <div className="user-dropdown-section">
+              <div className="subscription-info">
+                <small>One-Time Add-on</small>
+                <strong>{subscriptionLabel(oneTimeSubscription.tier)}</strong>
+                <small className="renewal-date">
+                  {oneTimeSubscription.currentPeriodEnd
+                    ? `Expires: ${new Date(oneTimeSubscription.currentPeriodEnd).toLocaleDateString()}`
+                    : 'Unavailable'}
+                </small>
+                <small>+50 generations for up to 5 days</small>
+              </div>
             </div>
           )}
 

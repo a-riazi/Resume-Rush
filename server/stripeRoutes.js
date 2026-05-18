@@ -51,8 +51,29 @@ async function extractStripePeriodBounds(stripeSubscription) {
     }
   }
 
+  // Log raw values for temporary diagnostics to detect units/format issues
+  try {
+    await debugLogStripePeriods('extract', stripeSubscription, periodStart, periodEnd);
+  } catch (e) {
+    // ignore
+  }
+
   return { periodStart, periodEnd };
 }
+
+// Temporary debug helper: log raw Stripe period values to help diagnose date issues
+async function debugLogStripePeriods(label, stripeSub, periodStart, periodEnd) {
+  try {
+    if (!stripeSub) return;
+    const id = stripeSub.id || stripeSub.subscription || '(unknown)';
+    console.log(`[StripePeriods][${label}] id=${id} periodStart=${periodStart} (${typeof periodStart}) periodEnd=${periodEnd} (${typeof periodEnd})`);
+  } catch (err) {
+    console.error('[StripePeriods] debug log failed:', err.message);
+  }
+}
+
+  // Debug: log raw period values when available to detect unit issues
+  // (kept minimal and safe for temporary diagnostics)
 
 // POST /api/checkout - Create Stripe checkout session
 router.post('/checkout', authMiddleware, async (req, res) => {
@@ -60,6 +81,7 @@ router.post('/checkout', authMiddleware, async (req, res) => {
     const frontendUrl = getFrontendUrl(req);
     const { planType } = req.body; // 'monthly' or 'one-time'
     const user = await User.findByPk(req.userId);
+    const usageMetrics = await UsageMetrics.findOne({ where: { userId: req.userId } });
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
@@ -67,6 +89,25 @@ router.post('/checkout', authMiddleware, async (req, res) => {
 
     if (!['monthly', 'one-time'].includes(planType)) {
       return res.status(400).json({ error: 'Invalid plan type' });
+    }
+
+    if (planType === 'one-time') {
+      const activeOneTime = await Subscription.findOne({
+        where: { userId: user.id, tier: 'one-time', status: { [Op.notIn]: ['expired'] } },
+        order: [['createdAt', 'DESC']],
+      });
+
+      const now = new Date();
+      const activeUntil = activeOneTime?.currentPeriodEnd ? new Date(activeOneTime.currentPeriodEnd) : null;
+      const remainingGenerations = user.tier === 'monthly'
+        ? (usageMetrics?.bonusGenerations || 0)
+        : Math.max(0, (usageMetrics?.generationsLimit || 0) - (usageMetrics?.generationsUsed || 0));
+
+      if (activeOneTime && activeUntil && activeUntil > now && remainingGenerations > 0) {
+        return res.status(400).json({
+          error: 'You already have an active one-time pass. You can buy again when it expires or when the generations run out.',
+        });
+      }
     }
 
     const priceId = planType === 'monthly' 

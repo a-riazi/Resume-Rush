@@ -41,6 +41,14 @@ async function extractStripePeriodBounds(stripeSub) {
     }
   }
 
+  // Temporary debug log to detect units/format of periodStart/periodEnd when syncing
+  try {
+    const id = stripeSub.id || stripeSub.subscription || '(unknown)';
+    console.log(`[StripePeriods][auth] id=${id} periodStart=${periodStart} (${typeof periodStart}) periodEnd=${periodEnd} (${typeof periodEnd})`);
+  } catch (err) {
+    // ignore
+  }
+
   return { periodStart, periodEnd };
 }
 
@@ -254,6 +262,7 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
     try {
       subscriptions = await Subscription.findAll({
         where: { userId: req.userId },
+        order: [['createdAt', 'DESC']],
       });
     } catch (subscriptionError) {
       console.error('[/api/auth/me] Subscription query failed, continuing without subscription:', subscriptionError.message);
@@ -267,23 +276,56 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
       }
     }
 
-    let subscription = subscriptions.find((item) => item.tier === 'monthly')
-      || subscriptions.find((item) => item.tier === 'one-time')
-      || subscriptions[0]
-      || null;
+    let monthlySubscription = subscriptions.find((item) => item.tier === 'monthly') || null;
+    let oneTimeSubscription = subscriptions.find((item) => item.tier === 'one-time') || null;
 
-    if (subscription && subscription.tier === 'monthly' && !subscription.currentPeriodEnd) {
+    if (monthlySubscription && !monthlySubscription.currentPeriodEnd) {
       const synced = await syncStripeSubscriptionForUser(user);
       if (synced) {
-        subscription = synced;
+        monthlySubscription = synced;
       }
     }
 
-    if (subscription && subscription.tier === 'monthly' && subscription.stripeSubscriptionId) {
-      subscription = await refreshLocalSubscriptionFromStripe(subscription);
+    if (monthlySubscription && monthlySubscription.stripeSubscriptionId) {
+      monthlySubscription = await refreshLocalSubscriptionFromStripe(monthlySubscription);
     }
 
-    console.log('[/api/auth/me] Subscription found:', !!subscription);
+    // If the monthly subscription's period has ended, mark it expired locally
+    if (monthlySubscription && monthlySubscription.currentPeriodEnd) {
+      try {
+        const now = new Date();
+        if (new Date(monthlySubscription.currentPeriodEnd) <= now && monthlySubscription.status !== 'expired') {
+          monthlySubscription.status = 'expired';
+          // Persist change so subsequent requests reflect expiry
+          if (typeof monthlySubscription.save === 'function') {
+            await monthlySubscription.save();
+          }
+        }
+      } catch (err) {
+        console.error('[/api/auth/me] Failed to persist expired monthly subscription:', err.message);
+      }
+    }
+
+    const usageEnd = usageMetrics?.bonusExpiresAt ? new Date(usageMetrics.bonusExpiresAt) : null;
+    const oneTimeRemaining = user.tier === 'monthly'
+      ? (usageMetrics?.bonusGenerations || 0)
+      : Math.max(0, (usageMetrics?.generationsLimit || 0) - (usageMetrics?.generationsUsed || 0));
+
+    if (oneTimeSubscription) {
+      const oneTimeEnd = oneTimeSubscription.currentPeriodEnd ? new Date(oneTimeSubscription.currentPeriodEnd) : null;
+      const oneTimeActive = oneTimeEnd && oneTimeEnd > new Date() && oneTimeRemaining > 0 && (!usageEnd || usageEnd > new Date());
+      oneTimeSubscription = {
+        tier: 'one-time',
+        status: oneTimeActive ? 'active' : 'expired',
+        currentPeriodEnd: oneTimeSubscription.currentPeriodEnd,
+        currentPeriodStart: oneTimeSubscription.currentPeriodStart,
+        stripeSubscriptionId: oneTimeSubscription.stripeSubscriptionId,
+      };
+    }
+
+    const primarySubscription = monthlySubscription || oneTimeSubscription || null;
+
+    console.log('[/api/auth/me] Subscription found:', !!primarySubscription);
 
     res.json({
       user: {
@@ -306,11 +348,27 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
           ? Math.max(0, Math.min(5, Math.ceil((new Date(usageMetrics.bonusExpiresAt) - new Date()) / (1000 * 60 * 60 * 24))))
           : null,
       } : null,
-      subscription: subscription ? {
-        tier: subscription.tier,
-        status: subscription.status,
-        currentPeriodEnd: subscription.currentPeriodEnd,
+      subscription: primarySubscription ? {
+        tier: primarySubscription.tier,
+        status: primarySubscription.status,
+        currentPeriodEnd: primarySubscription.currentPeriodEnd,
       } : null,
+      subscriptions: {
+        monthly: monthlySubscription ? {
+          tier: monthlySubscription.tier,
+          status: monthlySubscription.status,
+          currentPeriodStart: monthlySubscription.currentPeriodStart,
+          currentPeriodEnd: monthlySubscription.currentPeriodEnd,
+          stripeSubscriptionId: monthlySubscription.stripeSubscriptionId,
+        } : null,
+        oneTime: oneTimeSubscription ? {
+          tier: oneTimeSubscription.tier,
+          status: oneTimeSubscription.status,
+          currentPeriodStart: oneTimeSubscription.currentPeriodStart,
+          currentPeriodEnd: oneTimeSubscription.currentPeriodEnd,
+          stripeSubscriptionId: oneTimeSubscription.stripeSubscriptionId,
+        } : null,
+      },
     });
   } catch (error) {
     console.error('❌ Failed to fetch user:', error.message);

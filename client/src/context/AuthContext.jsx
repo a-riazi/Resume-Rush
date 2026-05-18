@@ -10,6 +10,7 @@ export function AuthProvider({ children }) {
   const [token, setToken] = useState(null);
   const [usage, setUsage] = useState(null);
   const [subscription, setSubscription] = useState(null);
+  const [subscriptions, setSubscriptions] = useState({ monthly: null, oneTime: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -60,6 +61,7 @@ export function AuthProvider({ children }) {
       setUser(response.data.user);
       setUsage(response.data.usage);
       setSubscription(response.data.subscription);
+      setSubscriptions(response.data.subscriptions || { monthly: null, oneTime: null });
       setError(null);
     } catch (err) {
       console.error('Failed to fetch user:', err);
@@ -120,6 +122,7 @@ export function AuthProvider({ children }) {
       setUser(null);
       setUsage(null);
       setSubscription(null);
+      setSubscriptions({ monthly: null, oneTime: null });
       setError(null);
     }
   };
@@ -136,6 +139,7 @@ export function AuthProvider({ children }) {
     token,
     usage,
     subscription,
+    subscriptions,
     loading,
     error,
     loginWithGoogle,

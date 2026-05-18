@@ -62,6 +62,250 @@
   font-size: 16px;
 }
 
+.billing-shell {
+  background:
+    radial-gradient(circle at top left, rgba(102, 126, 234, 0.28), transparent 30%),
+    radial-gradient(circle at top right, rgba(118, 75, 162, 0.22), transparent 26%),
+    linear-gradient(135deg, #f5f7ff 0%, #eef2ff 50%, #ffffff 100%);
+}
+
+.billing-content {
+  max-width: 960px;
+  width: min(960px, 100%);
+  text-align: left;
+  padding: 44px;
+}
+
+.billing-content-wide {
+  max-width: 1080px;
+}
+
+.billing-hero {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 20px;
+  align-items: center;
+  margin-bottom: 28px;
+}
+
+.billing-hero-copy h1 {
+  margin-bottom: 8px;
+}
+
+.billing-hero-copy p {
+  margin: 0;
+  color: #5b6476;
+}
+
+.billing-total-card {
+  min-width: 180px;
+  background: linear-gradient(135deg, #111827, #1f2937);
+  color: #fff;
+  border-radius: 18px;
+  padding: 18px 20px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+}
+
+.billing-total-card span {
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.78;
+}
+
+.billing-total-card strong {
+  display: block;
+  font-size: 44px;
+  line-height: 1;
+  margin: 6px 0 4px;
+}
+
+.billing-total-card small {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.checkout-details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 4px;
+}
+
+.checkout-detail-card {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 20px;
+  padding: 22px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(10px);
+}
+
+.checkout-detail-card-monthly {
+  border-top: 4px solid #6366f1;
+}
+
+.checkout-detail-card-addon {
+  border-top: 4px solid #f59e0b;
+}
+
+.card-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.checkout-detail-card h2 {
+  margin: 0;
+  font-size: 22px;
+  color: #111827;
+}
+
+.checkout-detail-card > p {
+  margin: 0 0 16px;
+  color: #5b6476;
+}
+
+.plan-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: #e0e7ff;
+  color: #3730a3;
+  white-space: nowrap;
+}
+
+.plan-pill.ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.plan-pill.warn {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.plan-pill.addon {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.usage-meter {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.usage-meter-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.usage-meter-header span {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.usage-meter-header strong {
+  font-size: 18px;
+  color: #0f172a;
+}
+
+.usage-bar-track {
+  height: 10px;
+  width: 100%;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+}
+
+.usage-bar-fill.addon {
+  background: linear-gradient(90deg, #f59e0b, #fb7185);
+}
+
+.usage-meter small {
+  display: block;
+  margin-top: 8px;
+  color: #64748b;
+}
+
+.detail-list {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 10px;
+  border-top: 1px solid #edf2f7;
+}
+
+.detail-row span {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.detail-row strong {
+  color: #111827;
+  font-weight: 600;
+  text-align: right;
+}
+
+.monthly-card-actions {
+  margin-top: 18px;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.monthly-card-actions .checkout-btn {
+  min-width: 180px;
+}
+
+.status-banner {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  font-size: 14px;
+}
+
+.status-banner.success {
+  background: #ecfdf5;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.checkout-actions {
+  flex-direction: row;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-top: 22px;
+}
+
+.checkout-actions .checkout-btn,
+.checkout-actions .checkout-btn-secondary {
+  min-width: 180px;
+}
+
 .checkout-actions {
   display: flex;
   flex-direction: column;
@@ -178,5 +422,31 @@
 
   .checkout-content h1 {
     font-size: 22px;
+  }
+
+  .billing-content {
+    padding: 28px 18px;
+  }
+
+  .billing-hero {
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+
+  .billing-total-card {
+    width: 100%;
+  }
+
+  .checkout-details-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .checkout-actions {
+    flex-direction: column;
+  }
+
+  .checkout-actions .checkout-btn,
+  .checkout-actions .checkout-btn-secondary {
+    width: 100%;
   }
 }
