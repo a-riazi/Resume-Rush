@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 import '../styles/Navigation.css'
 import AdsTxtStatus from './AdsTxtStatus'
 import UserProfile from './UserProfile'
 import { getSimulatedDate, isTimeTravelEnabled, setTimeTravelEnabled } from '../lib/devTime'
 
 export default function Navigation({ darkMode = false, onToggleDarkMode = () => {} }) {
+  const { user } = useAuth()
   const [timeTravelOn, setTimeTravelOn] = useState(() => import.meta.env.DEV ? isTimeTravelEnabled() : false)
 
   useEffect(() => {
@@ -43,6 +45,7 @@ export default function Navigation({ darkMode = false, onToggleDarkMode = () => 
             <li><Link to="/faq" className="nav-link">FAQ</Link></li>
             <li><Link to="/privacy" className="nav-link">Privacy</Link></li>
             <li><Link to="/terms" className="nav-link">Terms</Link></li>
+            {user?.isAdmin && <li><Link to="/admin" className="nav-link">Admin</Link></li>}
           </ul>
           <Link to="/?upgrade=1" className="nav-upgrade-btn" onClick={handleUpgradeClick}>
             Upgrade

@@ -356,6 +356,7 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
         name: user.name,
         picture: user.picture,
         tier: user.tier,
+        isAdmin: user.email?.toLowerCase() === process.env.ADMIN_EMAIL?.toLowerCase(),
       },
       usage: usageMetrics ? {
         used: usageMetrics.generationsUsed,
