@@ -3,12 +3,10 @@ import { useEffect, useState } from 'react'
 export default function AdsTxtStatus() {
   const [status, setStatus] = useState('checking')
 
-  // Only show in development mode
-  if (!import.meta.env.DEV) {
-    return null
-  }
-
   useEffect(() => {
+    // Only run the check in development builds
+    if (!import.meta.env.DEV) return
+
     let cancelled = false
     async function checkAdsTxt() {
       try {
@@ -26,7 +24,7 @@ export default function AdsTxtStatus() {
         } else {
           if (!cancelled) setStatus('partial')
         }
-      } catch (e) {
+      } catch {
         if (!cancelled) setStatus('missing')
       }
     }
@@ -37,6 +35,7 @@ export default function AdsTxtStatus() {
   const label = status === 'ok' ? 'ads.txt: OK' : status === 'partial' ? 'ads.txt: Check' : status === 'checking' ? 'ads.txt: …' : 'ads.txt: Missing'
   const cls = status === 'ok' ? 'status-badge ok' : status === 'partial' ? 'status-badge warn' : status === 'checking' ? 'status-badge checking' : 'status-badge missing'
 
+  if (!import.meta.env.DEV) return null
   return (
     <a href="/ads.txt" className={cls} aria-label={label} title={label} target="_blank" rel="noopener">
       {label}

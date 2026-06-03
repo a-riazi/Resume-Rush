@@ -1,22 +1,15 @@
 import { useState } from 'react'
 import axios from 'axios'
 import './App.css'
+import { getApiBaseUrl } from './lib/api'
+
+const API_BASE_URL = getApiBaseUrl()
 
 const templateOptions = [
-  { key: 'classic', label: 'Classic', accent: '#111', heading: '#111', body: '#222', bg: '#f4f2ec' },
-  { key: 'modern', label: 'Modern Accent', accent: '#0f766e', heading: '#0b4f4a', body: '#1f1b16', bg: '#e8f5f3' },
-  { key: 'minimal', label: 'Minimal', accent: '#dddddd', heading: '#333333', body: '#111111', bg: '#f8f8f8' },
-  { key: 'midnight', label: 'Midnight', accent: '#1f4b99', heading: '#12326f', body: '#0e172a', bg: '#eef2fb' },
-  { key: 'sunrise', label: 'Sunrise', accent: '#f97316', heading: '#9a3412', body: '#4a2b16', bg: '#fff3e6' },
-  { key: 'mint', label: 'Mint', accent: '#2dd4bf', heading: '#115e59', body: '#064e3b', bg: '#e6fffa' },
-  { key: 'sidebar', label: 'Sidebar', accent: '#1e40af', heading: '#1e40af', body: '#1a1a1a', bg: '#dbeafe' },
-  { key: 'executive', label: 'Executive', accent: '#d97706', heading: '#d97706', body: '#1a1a1a', bg: '#fef3c7' },
-  { key: 'clean', label: 'Clean Modern', accent: '#7c3aed', heading: '#7c3aed', body: '#374151', bg: '#f3e8ff' },
-  { key: 'bold', label: 'Bold Impact', accent: '#dc2626', heading: '#dc2626', body: '#1a1a1a', bg: '#fee2e2' },
-  { key: 'creative', label: 'Creative', accent: '#059669', heading: '#059669', body: '#1f2937', bg: '#d1fae5' },
-  { key: 'centered_serif', label: 'Centered Serif', accent: '#374151', heading: '#374151', body: '#1f2937', bg: '#eef2f7' },
-  { key: 'compact_pro', label: 'Compact Professional', accent: '#4b5563', heading: '#1f2937', body: '#111827', bg: '#f6f7f9' },
-  { key: 'left_bar', label: 'Left Bar', accent: '#374151', heading: '#1f2937', body: '#111827', bg: '#eef1f4' },
+  { key: 'classic', label: 'Classic',  description: 'Serif, ruled sections, zero color. ATS-safe for any role.',               accent: '#5c5c5c', heading: '#111111', body: '#1a1a1a', bg: '#f5f5f5' },
+  { key: 'slate',   label: 'Slate',    description: 'Dark navy sidebar with grouped skills. Sky-blue heading accents.',       accent: '#0ea5e9', heading: '#0f172a', body: '#0f172a', bg: '#f0f9ff' },
+  { key: 'onyx',    label: 'Onyx',     description: 'Charcoal header band. Uppercase serif sections with gold rules.',        accent: '#d4b483', heading: '#292524', body: '#292524', bg: '#faf9f7' },
+  { key: 'teal',    label: 'Teal',     description: 'Thin teal stripe. Color-matched name and headings. No rules.',           accent: '#0d9488', heading: '#0d9488', body: '#111827', bg: '#f0fdfa' },
 ]
 
 const sampleParsed = {
@@ -79,14 +72,14 @@ function App() {
   ])
   const [error, setError] = useState(null)
   const [activePreviewTab, setActivePreviewTab] = useState('resume')
-  const [activeJobId, setActiveJobId] = useState(null)
+  const [, setActiveJobId] = useState(null)
   const [dragActive, setDragActive] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [docxDownloading, setDocxDownloading] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
   const [showJobDescription, setShowJobDescription] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
-  const [previewJobId, setPreviewJobId] = useState(null)
+  const [, setPreviewJobId] = useState(null)
   const [pdfUrl, setPdfUrl] = useState(null)
   const [coverPdfUrl, setCoverPdfUrl] = useState(null)
   const [templateKey, setTemplateKey] = useState('classic')
@@ -107,14 +100,7 @@ function App() {
   const originalProjectsArray = Array.isArray(result?.projects) ? result.projects : null
   const originalProjectsText = !originalProjectsArray && typeof result?.projects === 'string' ? result.projects : ''
 
-  const tailoredSummary = jobDescriptions[0]?.results?.tailored?.tailored_summary || jobDescriptions[0]?.results?.tailored?.tailored_objective || ''
-  const tailoredSkillsArray = Array.isArray(jobDescriptions[0]?.results?.tailored?.target_skills)
-    ? jobDescriptions[0].results.tailored.target_skills
-    : (typeof jobDescriptions[0]?.results?.tailored?.tailored_technical_skills === 'string'
-        ? jobDescriptions[0].results.tailored.tailored_technical_skills.split(',').map(s => s.trim()).filter(Boolean)
-        : [])
-  const tailoredExperienceArray = Array.isArray(jobDescriptions[0]?.results?.tailored?.tailored_experience) ? jobDescriptions[0].results.tailored.tailored_experience : null
-  const tailoredExperienceText = !tailoredExperienceArray && typeof jobDescriptions[0]?.results?.tailored?.tailored_experience === 'string' ? jobDescriptions[0].results.tailored.tailored_experience : ''
+  // Tailored fields intentionally omitted in App-level wrapper; handled in Home component
 
   // Handle file selection
   const handleFileChange = (e) => {
@@ -214,7 +200,7 @@ function App() {
       formData.append('resume', file)
       formData.append('jobDescription', '') // Empty job description to just parse
 
-      const parseResponse = await axios.post('http://localhost:5000/api/upload', formData, {
+      const parseResponse = await axios.post(`${API_BASE_URL}/api/upload`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -240,7 +226,7 @@ function App() {
             jobFormData.append('resume', file)
             jobFormData.append('jobDescription', job.description.trim())
 
-            const jobResponse = await axios.post('http://localhost:5000/api/upload', jobFormData, {
+            const jobResponse = await axios.post(`${API_BASE_URL}/api/upload`, jobFormData, {
               headers: {
                 'Content-Type': 'multipart/form-data',
               },
@@ -320,7 +306,7 @@ function App() {
     
     try {
       const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey }
-      const response = await axios.post('http://localhost:5000/api/export-pdf', payload, {
+      const response = await axios.post(`${API_BASE_URL}/api/export-pdf`, payload, {
         responseType: 'blob',
       })
 
@@ -355,7 +341,7 @@ function App() {
           body: activeJob.results.coverLetter,
         }
       }
-      const coverResponse = await axios.post('http://localhost:5000/api/export-pdf-cover', coverPayload, {
+      const coverResponse = await axios.post(`${API_BASE_URL}/api/export-pdf-cover`, coverPayload, {
         responseType: 'blob',
       })
       const coverBlob = new Blob([coverResponse.data], { type: 'application/pdf' })
@@ -376,7 +362,7 @@ function App() {
     setPreviewLabel(`Sample · ${templateOptions.find((t) => t.key === key)?.label || key}`)
     try {
       const payload = { parsed: sampleParsed, tailored: null, templateKey: key }
-      const response = await axios.post('http://localhost:5000/api/export-pdf', payload, {
+      const response = await axios.post(`${API_BASE_URL}/api/export-pdf`, payload, {
         responseType: 'blob',
       })
 
@@ -423,7 +409,7 @@ function App() {
     setError(null)
     try {
       const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey }
-      const response = await axios.post('http://localhost:5000/api/export-docx', payload, {
+      const response = await axios.post(`${API_BASE_URL}/api/export-docx`, payload, {
         responseType: 'blob',
       })
 
@@ -460,7 +446,7 @@ function App() {
           body: activeJob.results.coverLetter,
         }
       }
-      const response = await axios.post('http://localhost:5000/api/export-docx-cover', coverPayload, {
+      const response = await axios.post(`${API_BASE_URL}/api/export-docx-cover`, coverPayload, {
         responseType: 'blob',
       })
 
@@ -593,7 +579,12 @@ function App() {
                             }
                             }}
                           >
-                          <div className="template-sample-pill" style={{ background: opt.accent, color: opt.bg }}>{opt.label}</div>
+                          <div className="template-sample-pill" style={{ background: opt.accent, color: '#fff' }}>
+                              {opt.label}
+                            </div>
+                            {opt.description && (
+                              <div className="template-sample-desc">{opt.description}</div>
+                            )}
                             <button
                               className="btn-secondary sample-btn"
                               type="button"

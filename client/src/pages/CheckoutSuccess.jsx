@@ -3,14 +3,16 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import '../styles/CheckoutPages.css';
+import { getApiBaseUrl } from '../lib/api';
 
 export default function CheckoutSuccess() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { refreshUser } = useAuth();
-  const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : 'https://api.resumerush.io');
+  const API_BASE_URL = getApiBaseUrl();
 
   useEffect(() => {
+    let timerId
     const syncAndRefresh = async () => {
       try {
         const sessionId = searchParams.get('session_id');
@@ -48,15 +50,14 @@ export default function CheckoutSuccess() {
         refreshUser();
 
         // Redirect after 3 seconds
-        const timer = setTimeout(() => {
+        timerId = setTimeout(() => {
           navigate('/');
         }, 3000);
-
-        return () => clearTimeout(timer);
       }
     };
 
     syncAndRefresh();
+    return () => clearTimeout(timerId);
   }, [API_BASE_URL, navigate, refreshUser, searchParams]);
 
   return (

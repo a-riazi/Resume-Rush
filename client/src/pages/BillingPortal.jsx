@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 import '../styles/CheckoutPages.css';
+import { getApiBaseUrl } from '../lib/api';
+import { formatSubscriptionEndLabel, getAppNow, getMonthlyRemaining, getOneTimeRemaining, isSubscriptionExpired, isMonthlyActive, isOneTimeSubscriptionActive } from '../lib/subscription';
 
 export default function BillingPortal() {
   const navigate = useNavigate();
@@ -11,53 +13,55 @@ export default function BillingPortal() {
   const [error, setError] = useState(null);
   const [statusMessage, setStatusMessage] = useState(null);
   const [portalUrl, setPortalUrl] = useState(null);
-  const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : 'https://api.resumerush.io');
+  const API_BASE_URL = getApiBaseUrl();
   const monthlySubscription = subscriptions?.monthly || (subscription?.tier === 'monthly' ? subscription : null);
   const oneTimeSubscription = subscriptions?.oneTime || (subscription?.tier === 'one-time' ? subscription : null);
   const monthlyLimit = Number.isFinite(usage?.limit) ? usage.limit : 0;
   const monthlyUsed = Number.isFinite(usage?.used) ? usage.used : 0;
-  const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
-  const bonusRemaining = Number.isFinite(usage?.bonusGenerations) ? usage.bonusGenerations : 0;
-  const bonusDaysLeft = Number.isFinite(usage?.bonusDaysLeft) ? usage.bonusDaysLeft : null;
+  const monthlyRemaining = getMonthlyRemaining(monthlySubscription, usage);
+  
   const msPerDay = 1000 * 60 * 60 * 24;
   const oneTimeSubscriptionEnd = oneTimeSubscription?.currentPeriodEnd ? new Date(oneTimeSubscription.currentPeriodEnd) : null;
   const oneTimeDaysLeft = oneTimeSubscriptionEnd
-    ? Math.max(0, Math.ceil((oneTimeSubscriptionEnd - new Date()) / msPerDay))
+    ? Math.max(0, Math.ceil((oneTimeSubscriptionEnd - getAppNow()) / msPerDay))
     : null;
   const hasAddOnStyleOneTime = Boolean(monthlySubscription && oneTimeSubscription);
-  const oneTimeTotal = hasAddOnStyleOneTime ? 50 : (usage?.limit || 50);
-  const oneTimeRemaining = hasAddOnStyleOneTime
-    ? bonusRemaining
-    : Math.max(0, (Number.isFinite(usage?.limit) ? usage.limit : 0) - (Number.isFinite(usage?.used) ? usage.used : 0));
+  const oneTimeTotal = 50;
+  const oneTimeRemaining = getOneTimeRemaining(oneTimeSubscription, usage, monthlySubscription);
   const totalRemaining = monthlyRemaining + oneTimeRemaining;
-  const monthlyCanReactivate = monthlySubscription?.status === 'canceled';
-  const oneTimeTimeLabel = hasAddOnStyleOneTime
-    ? `${bonusDaysLeft ?? '—'} day${bonusDaysLeft === 1 ? '' : 's'} left`
-    : `${oneTimeDaysLeft ?? '—'} day${oneTimeDaysLeft === 1 ? '' : 's'} left`;
-  const oneTimeEndsOn = oneTimeSubscription?.currentPeriodEnd
-    ? new Date(oneTimeSubscription.currentPeriodEnd).toLocaleDateString()
-    : 'Unavailable';
-
+  const oneTimeIsExpired = !oneTimeSubscriptionEnd || oneTimeSubscriptionEnd <= getAppNow() || oneTimeRemaining <= 0;
+  const oneTimeTimeLabel = `${oneTimeDaysLeft ?? '—'} day${oneTimeDaysLeft === 1 ? '' : 's'} left`;
   useEffect(() => {
     if (!isAuthenticated) {
       navigate('/');
       return;
     }
 
-    if (!monthlySubscription) {
-      setError('No monthly subscription to manage.');
+    if (!monthlySubscription && !oneTimeSubscription) {
+      setError('No active subscription found. Please purchase a plan to continue.');
       setLoading(false);
       return;
     }
 
     setLoading(false);
-  }, [isAuthenticated, navigate, monthlySubscription]);
+  }, [isAuthenticated, navigate, monthlySubscription, oneTimeSubscription]);
 
-  const monthlyStatusLabel = monthlySubscription?.status === 'canceled' ? 'Cancels at period end' : 'Active';
-  const monthlyDateLabel = monthlySubscription?.status === 'canceled' ? 'Expires:' : 'Renews:';
-  const monthlyDateValue = monthlySubscription?.currentPeriodEnd
-    ? new Date(monthlySubscription.currentPeriodEnd).toLocaleDateString()
-    : 'Unavailable';
+  const monthlyStatusLabel = monthlySubscription?.status === 'expired'
+    ? 'Expired'
+    : monthlySubscription?.status === 'canceled'
+      ? 'Cancels at period end'
+      : 'Active';
+  const monthlyDateValue = formatSubscriptionEndLabel(monthlySubscription);
+  const monthlyRemainingLabel = isSubscriptionExpired(monthlySubscription) ? '0 / 150' : `${monthlyRemaining} / ${monthlyLimit || 150}`;
+  const oneTimeRemainingLabel = oneTimeIsExpired
+    ? '0 / 50'
+    : `${oneTimeRemaining} / ${oneTimeTotal}`;
+  const monthlyUsagePercent = isSubscriptionExpired(monthlySubscription)
+    ? 100
+    : (monthlyLimit > 0 ? Math.min(100, (monthlyUsed / monthlyLimit) * 100) : 0);
+
+  // Reactivate is only possible if status='canceled' AND period not yet expired
+  const monthlyCanReactivate = monthlySubscription?.status === 'canceled' && isMonthlyActive(monthlySubscription);
 
   const handleCancel = async () => {
     try {
@@ -123,6 +127,30 @@ export default function BillingPortal() {
     }
   };
 
+  const handlePurchaseAgain = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const token = localStorage.getItem('auth_token');
+      const response = await axios.post(
+        `${API_BASE_URL}/api/checkout`,
+        { planType: 'one-time' },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const { url } = response.data || {};
+      if (url) {
+        window.location.href = url;
+      } else {
+        setError('Checkout URL not provided');
+      }
+    } catch (err) {
+      console.error('Purchase again failed:', err.response?.data || err.message);
+      setError(err.response?.data?.error || 'Failed to start checkout');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (!isAuthenticated) {
     return null;
   }
@@ -171,30 +199,30 @@ export default function BillingPortal() {
         </div>
 
         <div className="checkout-details-grid">
-          <div className="checkout-detail-card checkout-detail-card-monthly">
+          {monthlySubscription && (<div className="checkout-detail-card checkout-detail-card-monthly">
             <div className="card-heading-row">
               <h2>Monthly Plan</h2>
               <span className={`plan-pill ${monthlySubscription?.status === 'canceled' ? 'warn' : 'ok'}`}>
                 {monthlyStatusLabel}
               </span>
             </div>
-            <p>200 generations per month.</p>
+            <p>150 generations per month.</p>
             <div className="usage-meter">
               <div className="usage-meter-header">
                 <span>Remaining</span>
-                <strong>{monthlyRemaining} / {monthlyLimit || 200}</strong>
+                <strong>{monthlyRemainingLabel}</strong>
               </div>
               <div className="usage-bar-track">
                 <div
                   className="usage-bar-fill"
-                  style={{ width: `${monthlyLimit > 0 ? Math.min(100, (monthlyUsed / monthlyLimit) * 100) : 0}%` }}
+                  style={{ width: `${monthlyUsagePercent}%` }}
                 />
               </div>
               <small>{monthlyUsed} used this month</small>
             </div>
             <div className="detail-list">
               <div className="detail-row">
-                <span>{monthlyDateLabel}</span>
+                <span>Status</span>
                 <strong>{monthlyDateValue}</strong>
               </div>
               <div className="detail-row">
@@ -213,7 +241,7 @@ export default function BillingPortal() {
                 </button>
               )}
             </div>
-          </div>
+          </div>)}
 
           <div className="checkout-detail-card checkout-detail-card-addon">
             <div className="card-heading-row">
@@ -224,7 +252,7 @@ export default function BillingPortal() {
             <div className="usage-meter">
               <div className="usage-meter-header">
                 <span>Remaining</span>
-                <strong>{oneTimeRemaining} / {oneTimeTotal}</strong>
+                <strong>{oneTimeRemainingLabel}</strong>
               </div>
               <div className="usage-bar-track">
                 <div
@@ -236,10 +264,17 @@ export default function BillingPortal() {
             </div>
             <div className="detail-list">
               <div className="detail-row">
-                <span>Expires:</span>
-                <strong>{oneTimeEndsOn}</strong>
+                <span>Status</span>
+                <strong>{formatSubscriptionEndLabel(oneTimeSubscription)}</strong>
               </div>
               <p className="detail-note">Available again when fully used or time expires</p>
+            </div>
+            <div className="monthly-card-actions">
+              {(!oneTimeSubscription || oneTimeIsExpired) && (
+                <button className="checkout-btn" onClick={handlePurchaseAgain} disabled={loading}>
+                  {loading ? 'Processing...' : 'Purchase'}
+                </button>
+              )}
             </div>
           </div>
         </div>

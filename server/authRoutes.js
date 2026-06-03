@@ -4,6 +4,7 @@ const { OAuth2Client } = require('google-auth-library');
 const { User, UsageMetrics, Subscription } = require('./database');
 const { generateToken, authMiddleware } = require('./auth');
 const { TIER_CONFIG } = require('./tiers');
+const { getAppNow, advanceMonthlySubscriptionIfNeeded, checkAndExpireMonthlyIfNeeded, checkAndExpireOneTimeIfNeeded } = require('./subscription-time');
 
 const router = express.Router();
 const primaryGoogleClientId =
@@ -237,8 +238,9 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
     let usageMetrics = null;
     try {
       usageMetrics = await UsageMetrics.findOne({
-        where: { userId: req.userId },
-      });
+          where: { userId: req.userId },
+          order: [['createdAt', 'DESC']],
+        });
 
       if (!usageMetrics) {
         const tierConfig = TIER_CONFIG[user.tier] || TIER_CONFIG['auth-free'] || TIER_CONFIG.free;
@@ -269,10 +271,11 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
       subscriptions = [];
     }
 
-    if (!subscriptions.length && user.tier === 'monthly') {
+    const hasMonthlyInDb = subscriptions.some(s => s.tier === 'monthly');
+    if (!hasMonthlyInDb && user.tier === 'monthly') {
       const synced = await syncStripeSubscriptionForUser(user);
       if (synced) {
-        subscriptions = [synced];
+        subscriptions = [...subscriptions, synced];
       }
     }
 
@@ -290,36 +293,55 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
       monthlySubscription = await refreshLocalSubscriptionFromStripe(monthlySubscription);
     }
 
-    // If the monthly subscription's period has ended, mark it expired locally
-    if (monthlySubscription && monthlySubscription.currentPeriodEnd) {
-      try {
-        const now = new Date();
-        if (new Date(monthlySubscription.currentPeriodEnd) <= now && monthlySubscription.status !== 'expired') {
-          monthlySubscription.status = 'expired';
-          // Persist change so subsequent requests reflect expiry
-          if (typeof monthlySubscription.save === 'function') {
-            await monthlySubscription.save();
-          }
-        }
-      } catch (err) {
-        console.error('[/api/auth/me] Failed to persist expired monthly subscription:', err.message);
+    if (monthlySubscription && monthlySubscription.status === 'active') {
+      await advanceMonthlySubscriptionIfNeeded(monthlySubscription, usageMetrics, getAppNow(req));
+    }
+
+    // Check if monthly subscription has expired
+    if (monthlySubscription) {
+      await checkAndExpireMonthlyIfNeeded(monthlySubscription, usageMetrics, getAppNow(req));
+    }
+
+    // Check if one-time pass has expired (by time or by usage)
+    if (oneTimeSubscription && oneTimeSubscription.id) {
+      await checkAndExpireOneTimeIfNeeded(oneTimeSubscription, usageMetrics, user, getAppNow(req));
+      // Reload usageMetrics since bonus may have been cleared
+      if (usageMetrics?.reload) {
+        try { await usageMetrics.reload(); } catch (_) {}
       }
     }
 
-    const usageEnd = usageMetrics?.bonusExpiresAt ? new Date(usageMetrics.bonusExpiresAt) : null;
-    const oneTimeRemaining = user.tier === 'monthly'
-      ? (usageMetrics?.bonusGenerations || 0)
-      : Math.max(0, (usageMetrics?.generationsLimit || 0) - (usageMetrics?.generationsUsed || 0));
+    const oneTimeRemaining = (() => {
+      if (!oneTimeSubscription) return 0;
+      if (user.tier === 'monthly') {
+        // Primary source: bonusGenerations on usageMetrics (set by webhook/checkout handler)
+        const bonus = usageMetrics?.bonusGenerations || 0;
+        // Fallback: if a fresh one-time subscription exists but bonus not yet applied
+        if (bonus <= 0 && oneTimeSubscription.currentPeriodEnd) {
+          const now = getAppNow(req);
+          const end = new Date(oneTimeSubscription.currentPeriodEnd);
+          if (end > now) {
+            // Assume full one-time allocation until webhook processes (50 gens)
+            return TIER_CONFIG['one-time']?.generationsLimit || 50;
+          }
+        }
+        return bonus;
+      }
+
+      return Math.max(0, (usageMetrics?.generationsLimit || 0) - (usageMetrics?.generationsUsed || 0));
+    })();
 
     if (oneTimeSubscription) {
+      const now = getAppNow(req);
       const oneTimeEnd = oneTimeSubscription.currentPeriodEnd ? new Date(oneTimeSubscription.currentPeriodEnd) : null;
-      const oneTimeActive = oneTimeEnd && oneTimeEnd > new Date() && oneTimeRemaining > 0 && (!usageEnd || usageEnd > new Date());
+      const oneTimeActive = oneTimeEnd && oneTimeEnd > now && oneTimeRemaining > 0;
       oneTimeSubscription = {
         tier: 'one-time',
         status: oneTimeActive ? 'active' : 'expired',
         currentPeriodEnd: oneTimeSubscription.currentPeriodEnd,
         currentPeriodStart: oneTimeSubscription.currentPeriodStart,
         stripeSubscriptionId: oneTimeSubscription.stripeSubscriptionId,
+        remainingGenerations: oneTimeRemaining,
       };
     }
 
@@ -345,7 +367,7 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
         bonusGenerations: Math.min(50, usageMetrics.bonusGenerations || 0),
         bonusExpiresAt: usageMetrics.bonusExpiresAt || null,
         bonusDaysLeft: usageMetrics.bonusExpiresAt
-          ? Math.max(0, Math.min(5, Math.ceil((new Date(usageMetrics.bonusExpiresAt) - new Date()) / (1000 * 60 * 60 * 24))))
+          ? Math.max(0, Math.min(5, Math.ceil((new Date(usageMetrics.bonusExpiresAt) - getAppNow(req)) / (1000 * 60 * 60 * 24))))
           : null,
       } : null,
       subscription: primarySubscription ? {
@@ -367,6 +389,7 @@ router.get('/auth/me', authMiddleware, async (req, res) => {
           currentPeriodStart: oneTimeSubscription.currentPeriodStart,
           currentPeriodEnd: oneTimeSubscription.currentPeriodEnd,
           stripeSubscriptionId: oneTimeSubscription.stripeSubscriptionId,
+          remainingGenerations: oneTimeSubscription.remainingGenerations,
         } : null,
       },
     });

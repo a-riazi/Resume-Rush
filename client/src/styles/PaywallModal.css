@@ -246,6 +246,28 @@
   margin-top: 30px;
 }
 
+.paywall-student-note {
+  text-align: center;
+  color: #aaa;
+  font-size: 13px;
+  margin-top: 10px;
+  font-style: italic;
+}
+
+.auth-inline-error {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 1.4;
+  width: 100%;
+  max-width: 340px;
+  text-align: left;
+}
+
 .paywall-google-btn {
   margin-top: 16px;
 }

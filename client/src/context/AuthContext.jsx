@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+/* eslint-disable react-refresh/only-export-components */
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 
 // Create Auth Context
@@ -17,42 +18,12 @@ export function AuthProvider({ children }) {
   const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : 'https://api.resumerush.io');
 
   // Initialize auth from localStorage on mount
-  useEffect(() => {
-    const storedToken = localStorage.getItem('auth_token');
-    if (storedToken) {
-      setToken(storedToken);
-      fetchCurrentUser(storedToken);
-    } else {
-      setLoading(false);
-    }
-  }, []);
+  const fetchCurrentUser = useCallback(async (authToken, options = {}) => {
+    const {
+      preserveSessionOnError = false,
+      fallbackUser = null,
+    } = options;
 
-  // Listen for Google login events from UI
-  useEffect(() => {
-    const handler = async (event) => {
-      const credential = event?.detail?.credential;
-      if (credential) {
-        await loginWithGoogle(credential);
-      }
-    };
-
-    window.addEventListener('googleLogin', handler);
-    return () => window.removeEventListener('googleLogin', handler);
-  }, [token]);
-
-  useEffect(() => {
-    const handleFocus = () => {
-      if (token) {
-        fetchCurrentUser(token);
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
-  }, [token]);
-
-  // Fetch current user data
-  const fetchCurrentUser = async (authToken) => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/auth/me`, {
         headers: { Authorization: `Bearer ${authToken}` },
@@ -63,19 +34,41 @@ export function AuthProvider({ children }) {
       setSubscription(response.data.subscription);
       setSubscriptions(response.data.subscriptions || { monthly: null, oneTime: null });
       setError(null);
+      return true;
     } catch (err) {
       console.error('Failed to fetch user:', err);
-      localStorage.removeItem('auth_token');
-      setToken(null);
-      setUser(null);
-      setError(err.response?.data?.error || 'Failed to fetch user');
+      const errorMessage = err.response?.data?.error || 'Failed to fetch user';
+
+      if (!preserveSessionOnError) {
+        localStorage.removeItem('auth_token');
+        setToken(null);
+        setUser(null);
+        setUsage(null);
+        setSubscription(null);
+        setSubscriptions({ monthly: null, oneTime: null });
+      } else if (fallbackUser) {
+        setUser(fallbackUser);
+      }
+
+      setError(errorMessage);
+      return false;
     } finally {
       setLoading(false);
     }
-  };
+  }, [API_BASE_URL]);
+
+  useEffect(() => {
+    const storedToken = localStorage.getItem('auth_token');
+    if (storedToken) {
+      setToken(storedToken);
+      fetchCurrentUser(storedToken);
+    } else {
+      setLoading(false);
+    }
+  }, [fetchCurrentUser]);
 
   // Google OAuth Login
-  const loginWithGoogle = async (googleToken) => {
+  const loginWithGoogle = useCallback(async (googleToken) => {
     try {
       setLoading(true);
       const response = await axios.post(`${API_BASE_URL}/api/auth/google`, {
@@ -90,19 +83,55 @@ export function AuthProvider({ children }) {
       setUser(userData);
 
       // Fetch full user data
-      await fetchCurrentUser(jwtToken);
-      setError(null);
+      const profileLoaded = await fetchCurrentUser(jwtToken, {
+        preserveSessionOnError: true,
+        fallbackUser: userData,
+      });
+      if (!profileLoaded) {
+        console.warn('[Auth] Signed in, but failed to load the full profile. Keeping the session alive.');
+      } else {
+        setError(null);
+      }
 
       return { success: true, user: userData };
     } catch (err) {
       const errorMsg = err.response?.data?.error || 'Login failed';
-      setError(errorMsg);
-      console.error('Login failed:', errorMsg);
-      return { success: false, error: errorMsg };
+      const errorDetails = err.response?.data?.details;
+      const networkHint = err.code === 'ERR_NETWORK'
+        ? 'Network/CORS failure. Check that the server is running on localhost:5000 and that Google OAuth allows http://localhost:5173.'
+        : null;
+      const displayError = [errorMsg, errorDetails, networkHint].filter(Boolean).join(' · ');
+      setError(displayError);
+      console.error('Login failed:', displayError, err.response?.data || err);
+      return { success: false, error: displayError };
     } finally {
       setLoading(false);
     }
-  };
+  }, [API_BASE_URL, fetchCurrentUser]);
+
+  // Listen for Google login events from UI
+  useEffect(() => {
+    const handler = async (event) => {
+      const credential = event?.detail?.credential;
+      if (credential) {
+        await loginWithGoogle(credential);
+      }
+    };
+
+    window.addEventListener('googleLogin', handler);
+    return () => window.removeEventListener('googleLogin', handler);
+  }, [loginWithGoogle]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (token) {
+        fetchCurrentUser(token);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [token, fetchCurrentUser]);
 
   // Logout
   const logout = async () => {

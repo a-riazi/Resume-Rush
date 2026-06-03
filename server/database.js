@@ -135,6 +135,10 @@ const Subscription = sequelize.define('Subscription', {
     type: Sequelize.DATE,
     allowNull: true,
   },
+  canceledAt: {
+    type: Sequelize.DATE,
+    allowNull: true,
+  },
   createdAt: {
     type: Sequelize.DATE,
     defaultValue: Sequelize.NOW,
@@ -341,6 +345,10 @@ async function initializeDatabase() {
     await sequelize.query(`
       ALTER TABLE usage_metrics
       ADD COLUMN IF NOT EXISTS "bonusExpiresAt" TIMESTAMP DEFAULT NULL;
+    `);
+    await sequelize.query(`
+      ALTER TABLE subscriptions
+      ADD COLUMN IF NOT EXISTS "canceledAt" TIMESTAMP DEFAULT NULL;
     `);
     console.log('✓ Database schema backfill completed');
 

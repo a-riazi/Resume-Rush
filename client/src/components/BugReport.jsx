@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import axios from 'axios'
 import '../styles/BugReport.css'
+import { getApiBaseUrl } from '../lib/api'
 
-// For dev mode, use localhost:5000; for production, use the env variable
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : 'https://api.resumerush.io')
+const API_BASE_URL = getApiBaseUrl()
 
 console.log('[BugReport] API_BASE_URL:', API_BASE_URL)
 console.log('[BugReport] DEV mode:', import.meta.env.DEV)

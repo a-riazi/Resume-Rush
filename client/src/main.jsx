@@ -15,10 +15,13 @@ import BillingPortal from './pages/BillingPortal'
 import Admin from './pages/Admin'
 import ErrorBoundary from './ErrorBoundary.jsx'
 import { AuthProvider } from './context/AuthContext' 
+import { configureApiClient } from './lib/api'
 
 const GOOGLE_CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
   '773935745374-e7tne0elj25une1e1gugkskdpj8t91ku.apps.googleusercontent.com'
+
+configureApiClient()
 
 function App() {
   const [darkMode, setDarkMode] = useState(false)
@@ -57,6 +60,8 @@ function App() {
     </GoogleOAuthProvider>
   )
 }
+
+export default App
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

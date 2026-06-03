@@ -15,6 +15,7 @@ export default function ThemedGoogleButton({ onSuccess, onError, label = 'Contin
           onError={onError}
           text="signin"
           size="large"
+          ux_mode="popup"
         />
       </div>
     </div>

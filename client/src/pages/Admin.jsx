@@ -3,8 +3,10 @@ import { useAuth } from '../context/AuthContext'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import '../styles/Admin.css'
+import { getApiBaseUrl } from '../lib/api'
+import { formatSubscriptionEndLabel } from '../lib/subscription'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : 'https://api.resumerush.io')
+const API_BASE_URL = getApiBaseUrl()
 
 export default function Admin({ darkMode }) {
   const { user, loading: authLoading, token } = useAuth()
@@ -67,16 +69,7 @@ export default function Admin({ darkMode }) {
   })
 
   const formatPlanDate = (subscription) => {
-    if (!subscription?.currentPeriodEnd) {
-      return '—'
-    }
-
-    const isExpiredLike = subscription.tier === 'one-time'
-      ? true
-      : subscription.status === 'canceled' || subscription.status === 'expired'
-
-    const label = isExpiredLike ? 'Expires' : 'Renews'
-    return `${label}: ${new Date(subscription.currentPeriodEnd).toLocaleDateString()}`
+    return formatSubscriptionEndLabel(subscription)
   }
 
   const getPlanBadgeText = (subscription) => {

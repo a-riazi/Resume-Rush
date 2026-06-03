@@ -17,6 +17,7 @@ export default function GoogleSignInButton({ onSuccess, onError, text = 'signin'
           onError={onError}
           text={text}
           size={size}
+          ux_mode="popup"
         />
       </div>
     </div>

@@ -17,10 +17,10 @@ const TIER_CONFIG = {
     requiresAuth: true,
   },
   monthly: {
-    generationsLimit: 200,
+    generationsLimit: 150,
     jobsPerSession: 10,
     resetPeriod: 'monthly',
-    monthlyGenerations: 200,
+    monthlyGenerations: 150,
     price: 799, // $7.99 in cents
     requiresAuth: true,
   },

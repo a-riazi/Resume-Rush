@@ -32,6 +32,16 @@ function mapStripeStatus(stripeSubscription) {
   return shouldCancel ? 'canceled' : 'active';
 }
 
+function getLaterDate(existingDate, nextDate) {
+  const existing = existingDate ? new Date(existingDate) : null;
+  const next = nextDate ? new Date(nextDate) : null;
+
+  if (!existing && !next) return null;
+  if (!existing) return next;
+  if (!next) return existing;
+  return existing > next ? existing : next;
+}
+
 async function extractStripePeriodBounds(stripeSubscription) {
   if (!stripeSubscription) {
     return { periodStart: null, periodEnd: null };
@@ -216,6 +226,12 @@ async function handleCheckoutSessionCompleted(session) {
   const isSubscription = session.mode === 'subscription';
 
   if (isSubscription) {
+    // Guard: Stripe may not have set session.subscription yet if sync fires before webhook
+    if (!session.subscription) {
+      console.warn('[handleCheckoutSessionCompleted] Monthly session missing subscription ID — will be handled by webhook.');
+      return;
+    }
+
     // Get subscription details
     const subscription = await stripe.subscriptions.retrieve(session.subscription);
 
@@ -231,14 +247,14 @@ async function handleCheckoutSessionCompleted(session) {
       where: { userId: user.id },
       defaults: {
         generationsUsed: 0,
-        generationsLimit: TIER_CONFIG[planType]?.generationsLimit || 200,
+        generationsLimit: TIER_CONFIG[planType]?.generationsLimit || 150,
         currentJobCount: 0,
         maxJobCount: TIER_CONFIG[planType]?.jobsPerSession || 10,
         resetDate: new Date(),
       },
     });
 
-    const baseLimit = TIER_CONFIG[planType]?.generationsLimit || 200;
+    const baseLimit = TIER_CONFIG[planType]?.generationsLimit || 150;
     let carryOver = 0;
     let carryOverExpiry = null;
 
@@ -270,15 +286,26 @@ async function handleCheckoutSessionCompleted(session) {
       usageMetrics.bonusExpiresAt = newBonus > 0 ? carryOverExpiry : null;
     await usageMetrics.save();
 
-    await Subscription.create({
-      userId: user.id,
-      stripeCustomerId: session.customer,
-      stripeSubscriptionId: session.subscription,
-      tier: planType,
-      status: 'active',
-      currentPeriodStart: new Date(subscription.current_period_start * 1000),
-      currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+    const [newSub, subCreated] = await Subscription.findOrCreate({
+      where: { stripeSubscriptionId: session.subscription },
+      defaults: {
+        userId: user.id,
+        stripeCustomerId: session.customer,
+        tier: planType,
+        status: 'active',
+        currentPeriodStart: new Date(subscription.current_period_start * 1000),
+        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+      },
     });
+    if (!subCreated) {
+      newSub.userId = user.id;
+      newSub.stripeCustomerId = session.customer;
+      newSub.tier = planType;
+      newSub.status = 'active';
+      newSub.currentPeriodStart = new Date(subscription.current_period_start * 1000);
+      newSub.currentPeriodEnd = new Date(subscription.current_period_end * 1000);
+      await newSub.save();
+    }
   } else {
     // One-time payment
     const isMonthlyUser = user.tier === 'monthly';
@@ -303,7 +330,7 @@ async function handleCheckoutSessionCompleted(session) {
       const bonusAmount = TIER_CONFIG[planType]?.generationsLimit || 50;
       usageMetrics.bonusGenerations = (usageMetrics.bonusGenerations || 0) + bonusAmount;
       usageMetrics.bonusExpiresAt = expiryDate;
-      usageMetrics.generationsLimit = TIER_CONFIG.monthly.generationsLimit || 200;
+      usageMetrics.generationsLimit = TIER_CONFIG.monthly.generationsLimit || 150;
       usageMetrics.currentJobCount = 0;
       usageMetrics.maxJobCount = TIER_CONFIG.monthly.jobsPerSession || 10;
       await usageMetrics.save();
@@ -374,8 +401,10 @@ async function handleSubscriptionCanceled(stripeSubscription) {
     // Reset user to free tier
     const user = await User.findByPk(subscription.userId);
     if (user) {
-      user.tier = 'free';
-      await user.save();
+      // DO NOT immediately downgrade the user's tier here; the subscription
+      // should remain in effect until `currentPeriodEnd`. The app's `/api/auth/me`
+      // and usage checks will mark the subscription expired once the period ends.
+      console.log(`[/webhook] Subscription ${subscription.stripeSubscriptionId} canceled; user ${user.email} remains on current tier until period end.`);
     }
 
     console.log(`✓ Subscription canceled: ${stripeSubscription.id}`);
@@ -392,6 +421,21 @@ async function handlePaymentSucceeded(invoice) {
     subscription.status = 'active';
     await subscription.save();
     console.log(`✓ Payment succeeded for subscription: ${invoice.subscription}`);
+    try {
+      // Reset monthly usage for the subscription owner on successful renewal
+      const usageMetrics = await UsageMetrics.findOne({ where: { userId: subscription.userId } });
+      if (usageMetrics) {
+        usageMetrics.generationsUsed = 0;
+        usageMetrics.resetDate = new Date();
+        // Ensure monthly limits are set correctly
+        usageMetrics.generationsLimit = TIER_CONFIG.monthly.generationsLimit || usageMetrics.generationsLimit;
+        usageMetrics.maxJobCount = TIER_CONFIG.monthly.jobsPerSession || usageMetrics.maxJobCount;
+        await usageMetrics.save();
+        console.log(`[/webhook] Reset monthly usage for user ${subscription.userId} after invoice payment.`);
+      }
+    } catch (err) {
+      console.error('[/webhook] Failed to reset monthly usage after payment:', err.message);
+    }
   }
 }
 
@@ -518,19 +562,26 @@ router.post('/stripe/cancel-subscription', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'No active monthly subscription to cancel' });
     }
 
+    // Call Stripe to enable cancel_at_period_end
     const stripeSub = await stripe.subscriptions.update(subscription.stripeSubscriptionId, {
       cancel_at_period_end: true,
     });
 
+    // Extract period bounds from Stripe response (use getLaterDate to preserve locally-advanced period)
     const { periodEnd } = await extractStripePeriodBounds(stripeSub);
+    const localPeriodEnd = getLaterDate(subscription.currentPeriodEnd, periodEnd ? new Date(periodEnd * 1000) : null);
 
-    subscription.status = mapStripeStatus(stripeSub);
-    subscription.currentPeriodEnd = periodEnd ? new Date(periodEnd * 1000) : subscription.currentPeriodEnd;
+    // Update local subscription state
+    subscription.status = 'canceled'; // Mark as canceled but still charges until period end
+    subscription.currentPeriodEnd = localPeriodEnd || subscription.currentPeriodEnd;
+    subscription.canceledAt = new Date(); // Record when cancellation was requested
     await subscription.save();
 
     res.json({
       success: true,
+      status: subscription.status,
       currentPeriodEnd: subscription.currentPeriodEnd,
+      canceledAt: subscription.canceledAt,
     });
   } catch (error) {
     console.error('❌ Cancel subscription failed:', error);
@@ -547,27 +598,39 @@ router.post('/stripe/reactivate-subscription', authMiddleware, async (req, res) 
     }
 
     const subscription = await Subscription.findOne({
-      where: { userId: user.id, tier: 'monthly', status: { [Op.notIn]: ['expired'] } },
+      where: { userId: user.id, tier: 'monthly', status: 'canceled' },
       order: [['createdAt', 'DESC']],
     });
 
     if (!subscription || !subscription.stripeSubscriptionId) {
-      return res.status(400).json({ error: 'No monthly subscription to reactivate' });
+      return res.status(400).json({ error: 'No canceled monthly subscription to reactivate' });
     }
 
+    // Check if period end has passed; if so, cannot reactivate (must purchase again)
+    const now = new Date();
+    const periodEnd = new Date(subscription.currentPeriodEnd);
+    if (periodEnd <= now) {
+      return res.status(400).json({ 
+        error: 'Subscription period has expired. Please purchase a new subscription.' 
+      });
+    }
+
+    // Call Stripe to disable cancel_at_period_end (restores renewal)
     const stripeSub = await stripe.subscriptions.update(subscription.stripeSubscriptionId, {
       cancel_at_period_end: false,
     });
 
-    const { periodStart, periodEnd } = await extractStripePeriodBounds(stripeSub);
+    // Extract new period bounds from Stripe (renewal will be re-scheduled)
+    const { periodStart, periodEnd: newPeriodEnd } = await extractStripePeriodBounds(stripeSub);
+    const localPeriodEnd = getLaterDate(subscription.currentPeriodEnd, newPeriodEnd ? new Date(newPeriodEnd * 1000) : null);
 
-    subscription.status = mapStripeStatus(stripeSub);
-    subscription.currentPeriodEnd = periodEnd
-      ? new Date(periodEnd * 1000)
-      : subscription.currentPeriodEnd;
+    // Restore active state
+    subscription.status = 'active';
+    subscription.currentPeriodEnd = localPeriodEnd || subscription.currentPeriodEnd;
     subscription.currentPeriodStart = periodStart
       ? new Date(periodStart * 1000)
       : subscription.currentPeriodStart;
+    subscription.canceledAt = null; // Clear cancellation timestamp
     await subscription.save();
 
     res.json({

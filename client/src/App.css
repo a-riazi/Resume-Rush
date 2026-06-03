@@ -826,6 +826,18 @@
   font-weight: 800;
   font-size: 1.05rem;
   text-align: center;
+  color: #fff;
+}
+
+.template-sample-desc {
+  font-size: 0.78rem;
+  color: #6b7280;
+  text-align: center;
+  line-height: 1.3;
+}
+
+.dark-mode .template-sample-desc {
+  color: #9ca3af;
 }
 
 .sample-btn {

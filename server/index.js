@@ -7,24 +7,78 @@ const nodemailer = require('nodemailer');
 const Stripe = require('stripe');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
-const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, UnderlineType } = require('docx');
+const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, UnderlineType,
+  Table, TableRow, TableCell, WidthType, BorderStyle, ShadingType, TabStopType } = require('docx');
 const pdf = require('pdf-parse');
 const PDFDocument = require('pdfkit');
 const mammoth = require('mammoth');
 const fs = require('fs');
 const path = require('path');
+const puppeteer = require('puppeteer');
 const { templates, templateKeys, getTemplate } = require('./templates');
 const { initializeDatabase, User, UsageMetrics, Subscription, AnonymousUsage } = require('./database');
 const { optionalAuthMiddleware } = require('./auth');
 const { canPerformAction, incrementUsage, TIER_CONFIG } = require('./tiers');
+const { getAppNow, advanceMonthlySubscriptionIfNeeded, checkAndExpireMonthlyIfNeeded, checkAndExpireOneTimeIfNeeded } = require('./subscription-time');
 const { getWarningEmailHTML } = require('./email-templates');
 const authRoutes = require('./authRoutes');
 const stripeRoutes = require('./stripeRoutes');
+const { buildClassicHtml }   = require('./classicTemplateHtml');
+const { buildIvyHtml }       = require('./ivyTemplateHtml');
+const { buildPrestigeHtml }  = require('./prestigeTemplateHtml');
+const { buildDualHtml }      = require('./dualTemplateHtml');
+const { buildApexHtml }      = require('./apexTemplateHtml');
+
+function buildHtmlForTemplate(parsed, tailored, templateKey) {
+  if (templateKey === 'ivy')      return buildIvyHtml(parsed, tailored);
+  if (templateKey === 'prestige') return buildPrestigeHtml(parsed, tailored);
+  if (templateKey === 'dual')     return buildDualHtml(parsed, tailored);
+  if (templateKey === 'apex')     return buildApexHtml(parsed, tailored);
+  return buildClassicHtml(parsed, tailored);
+}
 
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+function validateStripeConfiguration() {
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (!process.env.STRIPE_SECRET_KEY) {
+    console.warn('⚠ STRIPE_SECRET_KEY is missing. Stripe checkout and billing routes will fail.');
+    if (isProduction) {
+      throw new Error('Missing required Stripe configuration: STRIPE_SECRET_KEY');
+    }
+    return;
+  }
+
+  if (!isProduction) return;
+
+  const requiredEnv = [
+    'STRIPE_SECRET_KEY',
+    'STRIPE_MONTHLY_PRICE_ID',
+    'STRIPE_ONE_TIME_PRICE_ID',
+    'STRIPE_WEBHOOK_SECRET',
+  ];
+
+  const missing = requiredEnv.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required Stripe configuration: ${missing.join(', ')}`);
+  }
+
+  if (!process.env.STRIPE_SECRET_KEY.startsWith('sk_live_')) {
+    throw new Error('Production requires a live Stripe secret key (sk_live_...).');
+  }
+
+  if (process.env.STRIPE_PUBLIC_KEY && !process.env.STRIPE_PUBLIC_KEY.startsWith('pk_live_')) {
+    throw new Error('Production STRIPE_PUBLIC_KEY must use a live publishable key (pk_live_...).');
+  }
+
+  if (!process.env.STRIPE_WEBHOOK_SECRET.startsWith('whsec_')) {
+    throw new Error('STRIPE_WEBHOOK_SECRET must start with whsec_.');
+  }
+}
 
 // Error handlers for unhandled errors
 process.on('unhandledRejection', (reason, promise) => {
@@ -59,6 +113,10 @@ const corsOptions = {
   origin: function (origin, callback) {
     // Allow non-browser requests (like curl) which have no origin
     if (!origin) return callback(null, true);
+    // Allow localhost/127.0.0.1 during development on any port
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
     // Allow our primary domains
     if (allowedOrigins.includes(origin)) return callback(null, true);
     // Allow common preview domains (Vercel, Railway)
@@ -69,10 +127,11 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-ResumeRush-Time-Offset-Days'],
 };
 
 app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 app.use(compression());
 const jsonParser = express.json();
 app.use((req, res, next) => {
@@ -295,44 +354,75 @@ async function parseResumeWithGemini(resumeText) {
   try {
     const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
     
-    const prompt = `You are a resume parser. Analyze the following resume text and extract structured information. Return ONLY valid JSON with no markdown formatting, no code blocks, and no additional text.
+    const prompt = `You are an expert resume parser. Extract structured data from the resume text below and return ONLY valid JSON — no markdown code blocks, no trailing commas, and no extra conversational text.
+
+CRITICAL RULES BEFORE YOU BEGIN:
+1. NAME: The candidate's full personal name (e.g. "Ali Riazi", "Jordan Lee"). It is almost always the very first prominent item on the resume, before any section headings. It is NEVER a section heading. NEVER return words like "Technical Skills", "Professional Summary", "Objective", "Education", "Experience", "Skills", "Certifications", "Projects", "Awards", "Languages", "Contact", "Profile", "Overview", "References", "Work History", or any similar heading as the name. If you cannot identify a clear personal name, return "".
+2. SUMMARY: Return only the body text of the professional summary/objective — do NOT include the section label (e.g. strip "Professional Summary", "Objective:", "Summary:", "Header:" from the start of the text).
+3. EXPERIENCE BULLETS: Each bullet point must be its own string in the array. Split on bullet symbols (•, -, *, ◦), numbered lists, or newlines. Never combine multiple bullets into one string.
+4. SKILLS: Return a flat array of individual skill strings.
+5. ACCURACY: Only extract what is actually present in the resume. Return "" or [] for missing fields. Return null for missing optional object fields.
+6. NO DUPLICATES: Never repeat the same value across contact fields or arrays. If the same URL appears multiple times in the source text, keep it once. Skills, languages, bullets, and project technologies must be unique.
 
 Resume Text:
+---
 ${resumeText}
+---
 
 Return a JSON object with this exact structure:
 {
-  "name": "Full name of the candidate",
-  "email": "Email address",
-  "phone": "Phone number",
-  "location": "City, State/Country",
-  "summary": "Professional summary or objective",
+  "name": "Candidate full personal name, or empty string if not found",
+  "email": "Email address, or empty string",
+  "phone": "Phone number, or empty string",
+  "location": "City, State or Country, or empty string",
+  "summary": "Body text of professional summary/objective only — no section label prefix, or empty string",
+  "links": {
+    "linkedin": "Full LinkedIn URL if present, or null",
+    "github": "Full GitHub URL if present, or null",
+    "portfolio": "Portfolio/personal website URL if present, or null"
+  },
   "experience": [
     {
-      "company": "Company name",
-      "title": "Job title",
-      "dates": "Employment dates",
-      "description": "Brief description of responsibilities and achievements"
+      "company": "Exact company name",
+      "title": "Exact job title",
+      "dates": "Employment date range",
+      "bullets": ["One bullet point per string"]
     }
   ],
   "education": [
     {
       "school": "Institution name",
-      "degree": "Degree type",
-      "field": "Field of study",
-      "dates": "Graduation date or date range"
+      "degree": "Degree type (B.S., M.S., Ph.D., etc.)",
+      "field": "Field or major",
+      "dates": "Date range or graduation date",
+      "gpa": "GPA if listed, or null"
     }
   ],
   "projects": [
     {
       "name": "Project title",
-      "organization": "Institution/Company (if applicable)",
-      "dates": "Project dates",
-      "description": "Brief description of the project",
+      "organization": "Associated institution or company, or null",
+      "dates": "Project dates, or null",
+      "description": "What the project does and what was built",
       "technologies": ["tech1", "tech2"]
     }
   ],
-  "skills": ["skill1", "skill2", "skill3"]
+  "certifications": [
+    {
+      "name": "Certification name",
+      "issuer": "Issuing organization, or null",
+      "date": "Date obtained, or null"
+    }
+  ],
+  "awards": [
+    {
+      "title": "Award title",
+      "issuer": "Awarding organization, or null",
+      "date": "Year, or null"
+    }
+  ],
+  "languages": ["Language (proficiency level)"],
+  "skills": ["skill1", "skill2"]
 }`;
 
     const result = await model.generateContent(prompt);
@@ -344,6 +434,81 @@ Return a JSON object with this exact structure:
     
     // Parse JSON
     const parsedData = JSON.parse(text);
+
+    // ── Post-parse name sanity check ─────────────────────────────────────────
+    // If Gemini returned a section heading as the name, clear it so the fallback runs.
+    const HEADING_WORDS = /\b(skills?|summary|objective|experience|education|certification|project|award|language|technical|professional|work|employment|history|references|contact|profile|overview|about)\b/i;
+    if (parsedData.name && HEADING_WORDS.test(parsedData.name)) {
+      console.warn('[parseResumeWithGemini] Rejected invalid name from Gemini:', parsedData.name);
+      parsedData.name = '';
+    }
+
+    // Regex fallback: recover fields Gemini failed to extract
+    if (!parsedData.email) {
+      const emailMatch = resumeText.match(/[\w.+%-]+@[\w.-]+\.[a-z]{2,}/i);
+      if (emailMatch) parsedData.email = emailMatch[0];
+    }
+    if (!parsedData.phone) {
+      const phoneMatch = resumeText.match(/(\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/);
+      if (phoneMatch) parsedData.phone = phoneMatch[0].trim();
+    }
+    if (!parsedData.name) {
+      // Require: 2–4 title-cased words, letters/hyphens/apostrophes only, first 30 lines only
+      const namePattern = /^[A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){1,3}$/;
+      const topLines = resumeText.split('\n').slice(0, 30).map(l => l.trim());
+      const candidate = topLines.find(l =>
+        namePattern.test(l) &&
+        !HEADING_WORDS.test(l) &&
+        !l.includes('@') &&
+        !l.includes('http') &&
+        !l.endsWith(':')
+      );
+      if (candidate) parsedData.name = candidate;
+    }
+
+    // Final sanitation: normalize + dedupe repeated fields so downstream rendering
+    // never repeats contact URLs or repeated list items.
+    const dedupeStrings = (arr) => {
+      const seen = new Set();
+      return (Array.isArray(arr) ? arr : [])
+        .map((v) => (v == null ? '' : String(v).trim()))
+        .filter(Boolean)
+        .filter((v) => {
+          const key = v.toLowerCase().replace(/\/+$/, '');
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+    };
+
+    if (!parsedData.links || typeof parsedData.links !== 'object') parsedData.links = {};
+    const orderedLinkValues = dedupeStrings([
+      parsedData.links.linkedin,
+      parsedData.links.github,
+      parsedData.links.portfolio,
+    ]);
+    parsedData.links.linkedin = orderedLinkValues[0] || null;
+    parsedData.links.github = orderedLinkValues[1] || null;
+    parsedData.links.portfolio = orderedLinkValues[2] || null;
+
+    parsedData.skills = dedupeStrings(parsedData.skills);
+    parsedData.languages = dedupeStrings(parsedData.languages);
+
+    if (Array.isArray(parsedData.experience)) {
+      parsedData.experience = parsedData.experience.map((exp) => ({
+        ...exp,
+        bullets: dedupeStrings(exp?.bullets),
+      }));
+    }
+
+    if (Array.isArray(parsedData.projects)) {
+      parsedData.projects = parsedData.projects.map((proj) => ({
+        ...proj,
+        technologies: dedupeStrings(proj?.technologies),
+      }));
+    }
+
+    console.log('[parseResumeWithGemini] name:', parsedData.name || '(empty)', '| email:', parsedData.email || '(empty)');
     return parsedData;
   } catch (error) {
     console.error('Gemini parsing error:', error);
@@ -352,16 +517,24 @@ Return a JSON object with this exact structure:
 }
 
 // Tailor resume to job description with Gemini
-async function tailorResumeWithGemini(parsedResume, jobDescription, limitToOnePage = false) {
+async function tailorResumeWithGemini(parsedResume, jobDescription, limitToOnePage = false, templateKey = 'classic') {
   try {
     console.log('[tailorResumeWithGemini] Starting...');
     const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
-    const onePageConstraint = limitToOnePage 
-      ? '\n\n⚠️ CRITICAL: The resume MUST fit on ONE PAGE. Maximize content density. Reduce descriptions to 1-2 lines max. Limit each role to 2-3 bullet points max. Eliminate any section that is not essential. Combine skills inline where possible.'
+    const onePageConstraint = limitToOnePage
+      ? `\n\n⚠️ ONE-PAGE CONSTRAINT — This is the highest-priority rule. The resume MUST fit on a single Letter-size page.\n\nPRIORITIZATION STRATEGY (follow strictly in this order):\na) EXPERIENCE: Include only the 2 most relevant roles for this specific job. If fewer than 2 are relevant, use the 2 most recent roles. Write exactly 2 bullets per role — the highest-impact, most job-relevant bullets only.\nb) SUMMARY: 2 sentences maximum.\nc) SKILLS: Use a single flat comma-separated list (no grouped categories). Include only the 10–12 most relevant skills.\nd) PROJECTS: Include at most 1 project — only if it directly demonstrates a skill critical for this role. Otherwise return [].\ne) SECTIONS: Omit certifications, awards, and languages entirely unless they are a primary differentiator for this specific role.\nf) EDUCATION: One line per entry (school + degree + dates only). Omit GPA unless 3.8 or above.\n\nDo NOT compress everything uniformly. Intelligently SELECT which entries to include or OMIT based on direct relevance to the job description. Quality and relevance over completeness.`
       : '';
 
-    const prompt = `You are an expert resume tailor. Using ONLY the candidate data provided and the job description, craft a tailored resume summary and bullet points. Do not invent experience that is not present.
+    const TEMPLATE_HINTS = {
+      ivy: `IVY TEMPLATE — Additional output rules (apply alongside the rules above):\na) OUTPUT FIELD: Add a "tailored_activities" field alongside "tailored_experience". Map this from the candidate's non-employment entries — clubs, organizations, volunteer work, sports, student groups, research assistantships, extracurricular activities. Structure is identical to tailored_experience:\n   [{"org": "Organization name", "role": "Position/role held", "dates": "Month Year – Month Year", "bullets": ["bullet 1"]}]\n   If no relevant activities exist, return \"tailored_activities\": [].\nb) SECTIONS: Use ONLY these valid section keys for the Ivy template: \"summary\", \"education\", \"experience\", \"activities\", \"skills\". Do NOT include \"projects\", \"certifications\", \"awards\", or \"languages\".\n   - Include \"activities\" in sections[] only if tailored_activities is non-empty.\n   - Entry-level / academic (student or 0-3 years exp): [\"summary\", \"education\", \"experience\", \"activities\", \"skills\"]\n   - Experienced (4+ years): [\"summary\", \"experience\", \"education\", \"activities\", \"skills\"]\nc) SKILLS GROUPING: Use these specific group names in skills_grouped where applicable:\n   - \"Technical\" — programming languages, software, frameworks, tools, platforms\n   - \"Language\" — spoken/written languages (e.g. \"Spanish (Fluent)\"); omit if candidate has none\n   - \"Laboratory\" — scientific or lab techniques; include only if directly relevant to the role\n   - \"Interests\" — hobbies or personal interests suitable for interview conversation; include if candidate data suggests any\n   Omit any category that has no relevant content.`,
+      prestige: `PRESTIGE TEMPLATE — Additional output rules (apply alongside the rules above):\na) OUTPUT FIELD: Add a "tailored_activities" field alongside "tailored_experience". Map from the candidate's non-employment entries — clubs, organizations, volunteer work, extracurriculars. Structure identical to tailored_experience: [{"org": "Org name", "role": "Role held", "dates": "Month Year – Month Year", "bullets": ["bullet"]}]. Return [] if none.\nb) SECTIONS: Use ONLY: \"summary\" (optional), \"education\", \"experience\", \"activities_leadership\", \"skills\".\n   - Include \"activities_leadership\" in sections[] only if tailored_activities is non-empty.\n   - Entry-level / academic: [\"education\", \"experience\", \"activities_leadership\", \"skills\"]\n   - Experienced (4+ years): [\"summary\", \"experience\", \"education\", \"activities_leadership\", \"skills\"]\nc) SKILLS GROUPING: skills_grouped keys \"Technical\", \"Languages\", \"Interests\". Omit any with no relevant content.`,
+      dual: `DUAL TEMPLATE (two-column sidebar) — Additional output rules (apply alongside the rules above):\na) SECTIONS: Use ONLY \"experience\", \"education\", \"skills\". No summary or activities section.\nb) SKILLS GROUPING: skills_grouped must use these exact key strings (each key becomes a sidebar section heading):\n   - \"Technical Skills\" — programming languages, software, frameworks, tools, platforms\n   - \"Languages\" — spoken/written languages (e.g. \"Spanish (Fluent)\"); omit if none\n   - \"Laboratory / Tools\" — lab techniques or scientific tools; include only if relevant to role\n   - \"Interests\" — hobbies suitable for interview conversation; include if data available\n   Omit any category with no content.\nc) Section order: [\"experience\", \"education\", \"skills\"]`,
+      apex: `APEX TEMPLATE (executive style) — Additional output rules (apply alongside the rules above):\na) SECTIONS: Use ONLY \"summary\", \"experience\", \"education_certifications\", \"skills\".\n   - \"education_certifications\" is a combined section for both education AND certifications.\n   - Always include \"summary\" — write as a senior executive profile, 2–3 impactful sentences.\nb) SKILLS GROUPING: skills_grouped keys:\n   - \"Management\" — leadership, methodologies, soft skills (e.g. Strategic Planning, Agile, Stakeholder Management)\n   - \"Technical\" — software, tools, programming languages, platforms\n   Omit any category with no relevant content.\nc) Section order: always [\"summary\", \"experience\", \"education_certifications\", \"skills\"].`,
+    };
+    const templateHint = TEMPLATE_HINTS[templateKey] ? `\n\n${TEMPLATE_HINTS[templateKey]}` : '';
+
+    const prompt = `You are an expert resume tailor. Using ONLY the candidate data provided and the job description, produce a complete, high-quality tailored resume. Do NOT invent companies, roles, dates, or specific metrics that are not present in the source data.
 
 Candidate data (JSON):
 ${JSON.stringify(parsedResume, null, 2)}
@@ -369,29 +542,51 @@ ${JSON.stringify(parsedResume, null, 2)}
 Job description:
 ${jobDescription}
 
-Return ONLY valid JSON (no markdown, no code fences) with this structure (example):
+Return ONLY valid JSON (no markdown, no code fences) with this exact structure:
 {
-  "tailored_summary": "summary text here",
-  "target_skills": ["skill1", "skill2", "skill3"],
+  "tailored_summary": "2-3 sentences. Keyword-dense. Implicitly demonstrates fit without mentioning the job title, company name, or that this was tailored.",
+  "skills_grouped": {
+    "Category Label": ["skill1", "skill2"]
+  },
   "tailored_experience": [
     {
-      "role": "Role title from resume",
-      "company": "Company name from resume",
-      "dates": "Dates from resume",
+      "role": "Exact role title from resume",
+      "company": "Exact company name from resume",
+      "dates": "Exact dates from resume",
       "bullets": ["bullet 1", "bullet 2", "bullet 3"]
     }
   ],
-  "recommended_template": "classic | modern | minimal"
+  "tailored_projects": [
+    {
+      "name": "Project name from resume",
+      "description": "Rewritten to emphasize job-relevant aspects",
+      "technologies": ["tech1", "tech2"]
+    }
+  ],
+  "sections": ["summary", "skills", "experience", "education"],
+  "recommended_template": "key_from_list",
+  "role_category": "tech | creative | executive | academic | healthcare | entry-level | general"
 }
 
-Rules:
-- Use ONLY facts from the candidate data; do not fabricate companies, roles, or metrics.
-- Prefer concise, action-oriented bullets; mirror job terminology where appropriate.
-- Integrate relevant job keywords directly into the summary and bullets instead of listing them separately.
-- Do NOT mention the job title, company, or that this is tailored to a specific posting; weave fit implicitly without explicit job references.
-- If something is missing, use empty string or empty array.
-- Output must be valid JSON with no trailing commas.
-- For "recommended_template", choose one key from this list: ${templateKeys.join(', ')}.${onePageConstraint}`;
+RULES — follow all of these precisely:
+
+1. BULLET QUALITY: Write 3-5 bullets per role. Every bullet must: (a) start with a strong past-tense action verb, (b) describe what was done and at what scope, (c) include the result or impact when inferable from the source data. DISCARD generic bullets like "Worked on various projects" — replace with specific, achievement-oriented language from the source description. Mirror exact terminology from the job description (e.g. if JD says "Agile ceremonies", use that phrase, not "Scrum meetings").
+
+2. QUANTIFIED IMPACT: Add concrete scale language wherever the source data implies it — numbers, percentages, team sizes, revenue, time saved. Do NOT fabricate specific numbers. Use scope language when no number exists ("enterprise-scale", "cross-functional team of engineers", "production system serving thousands of users").
+
+3. SKILLS GROUPING: In skills_grouped, group skills meaningfully for the role_category (tech roles: split into "Programming Languages", "Frameworks & Libraries", "Tools & Platforms"; business roles: "Core Competencies", "Software & Tools"; academic: "Research Methods", "Tools"). Use max 4 groups. Only include skills from the candidate data that are relevant to this job. Each group should have 4-10 items.
+
+4. PROJECT FILTERING: In tailored_projects, include ONLY projects that directly demonstrate skills or domain knowledge needed for this specific role. Rewrite each description to emphasize the most job-relevant aspects. If no projects are relevant, return an empty array [].
+
+5. SECTION ORDER & RELEVANCE: Populate sections[] with ONLY the keys for which the candidate has real content. Order them optimally for this role:
+   - Senior candidates (4+ years of experience): ["summary", "skills", "experience", "education", ...]
+   - Entry-level / students: ["summary", "education", "skills", "projects", "experience", ...]
+   - Academic / research: ["summary", "education", "experience", "certifications", ...]
+   Always put "summary" first. Only include "projects" if tailored_projects is non-empty. Include "certifications" only if candidate has certifications data. Include "awards" only if candidate has awards data.
+
+6. ACCURACY: Use ONLY the candidate's actual companies, roles, dates, and project names. Output valid JSON with no trailing commas.
+
+7. NO DUPLICATES: Do not repeat values anywhere in output. Remove duplicated bullets within a role, duplicated skills within/across skills_grouped categories, duplicated technologies in projects, duplicated projects, and duplicated section keys in sections[].${onePageConstraint}${templateHint}`;
 
     console.log('[tailorResumeWithGemini] Calling Gemini API...');
     const startTime = Date.now();
@@ -410,8 +605,60 @@ Rules:
     text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 
     const tailored = JSON.parse(text);
-    if (tailored && tailored.recommended_template && !templateKeys.includes(tailored.recommended_template)) {
-      tailored.recommended_template = 'classic';
+    const dedupeStrings = (arr) => {
+      const seen = new Set();
+      return (Array.isArray(arr) ? arr : [])
+        .map((v) => (v == null ? '' : String(v).trim()))
+        .filter(Boolean)
+        .filter((v) => {
+          const key = v.toLowerCase().replace(/\/+$/, '');
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+    };
+
+    if (Array.isArray(tailored?.sections)) {
+      tailored.sections = dedupeStrings(tailored.sections);
+    }
+
+    if (tailored?.skills_grouped && typeof tailored.skills_grouped === 'object') {
+      for (const [k, values] of Object.entries(tailored.skills_grouped)) {
+        tailored.skills_grouped[k] = dedupeStrings(values);
+      }
+    }
+
+    if (Array.isArray(tailored?.tailored_experience)) {
+      tailored.tailored_experience = tailored.tailored_experience.map((exp) => ({
+        ...exp,
+        bullets: dedupeStrings(exp?.bullets),
+      }));
+    }
+
+    if (Array.isArray(tailored?.tailored_activities)) {
+      tailored.tailored_activities = tailored.tailored_activities.map((item) => ({
+        ...item,
+        bullets: dedupeStrings(item?.bullets),
+      }));
+    }
+
+    if (Array.isArray(tailored?.tailored_projects)) {
+      const seenProjects = new Set();
+      tailored.tailored_projects = tailored.tailored_projects
+        .map((proj) => ({
+          ...proj,
+          technologies: dedupeStrings(proj?.technologies),
+        }))
+        .filter((proj) => {
+          const key = `${proj?.name || ''}::${proj?.description || ''}`.trim().toLowerCase();
+          if (!key || seenProjects.has(key)) return false;
+          seenProjects.add(key);
+          return true;
+        });
+    }
+    // Back-compat: if AI returned old target_skills instead of skills_grouped, promote it
+    if (tailored && tailored.target_skills && !tailored.skills_grouped) {
+      tailored.skills_grouped = { 'Skills': tailored.target_skills };
     }
     console.log('[tailorResumeWithGemini] Complete');
     return tailored;
@@ -569,124 +816,369 @@ function resolvePdfFont(name, isHeading = false) {
   return isHeading ? 'Helvetica-Bold' : 'Helvetica';
 }
 
-function buildResumePdf(doc, parsed = {}, tailored = null, templateKey = 'classic', limitToOnePage = false) {
-  const style = getTemplate(templateKey);
-  const contact = [parsed.email, parsed.phone, parsed.location].filter(Boolean).join(' · ');
-  const headingFont = resolvePdfFont(style.pdf.headingFont || style.pdf.font, true);
-  const bodyFont = resolvePdfFont(style.pdf.font, false);
-  const layout = style.layout || 'traditional';
 
-  // Simple header matching DOCX capabilities
-  const titleAlign = (layout === 'centered' || layout === 'formal' || layout === 'minimalist' || layout === 'minimal') ? 'center' : 'left';
-  
-  doc.font(headingFont).fontSize(style.pdf.titleSize).fillColor(style.docx?.titleColor ? `#${style.docx.titleColor}` : style.pdf.titleColor).text(parsed.name || 'Resume', { align: titleAlign });
-  
-  if (contact) {
-    doc.moveDown(0.18);
-    doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.contactColor ? `#${style.docx.contactColor}` : style.pdf.contactColor).text(contact, { align: titleAlign });
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+// HTML parser utilities (used by DOCX→HTML→PDF pipeline)
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // Simple divider
-  doc.moveDown(0.3);
-  doc.moveTo(doc.page.margins.left, doc.y).lineTo(doc.page.width - doc.page.margins.right, doc.y)
-    .strokeColor(style.docx?.accentColor ? `#${style.docx.accentColor}` : style.pdf.accentColor).lineWidth(0.5).stroke();
-  doc.moveDown(style.pdf.sectionGap);
+function decodeEntities(s) {
+  return s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
+}
 
-  // Cover letter rendering is in buildCoverPdf()
-
-  const summary = tailored?.tailored_summary || parsed.summary;
-  if (summary) {
-    addSectionTitle(doc, 'Summary', style, layout);
-    doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(summary, { lineGap: style.pdf.lineGap });
-  }
-
-  const skills = (tailored?.target_skills && tailored.target_skills.length > 0) ? tailored.target_skills : parsed.skills || [];
-  if (skills.length > 0) {
-    addSectionTitle(doc, 'Skills', style, layout);
-    doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(skills.join(', '), { lineGap: style.pdf.lineGap });
-  }
-
-  // Render Education before Experience
-  if (parsed.education && Array.isArray(parsed.education) && parsed.education.length > 0) {
-    addSectionTitle(doc, 'Education', style, layout);
-    parsed.education.forEach((edu) => {
-      const heading = [edu.degree, edu.field].filter(Boolean).join(' in ');
-      if (heading) {
-        doc.font(headingFont).fontSize(style.pdf.subheadingSize).fillColor(style.docx?.headingColor ? `#${style.docx.headingColor}` : style.pdf.headingColor).text(heading);
-      }
-      if (edu.school) {
-        doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(edu.school);
-      }
-      if (edu.dates) {
-        doc.font(bodyFont).fontSize(style.pdf.bodySize - 1).fillColor('#666').text(edu.dates);
-      }
-      doc.moveDown(0.5);
-    });
-  }
-
-  const expList = (tailored?.tailored_experience && tailored.tailored_experience.length > 0)
-    ? tailored.tailored_experience
-    : parsed.experience || [];
-  if (expList.length > 0) {
-    addSectionTitle(doc, 'Experience', style, layout);
-    // Limit to top 3 items if one-page constraint
-    const itemsToShow = limitToOnePage ? expList.slice(0, 3) : expList;
-    itemsToShow.forEach((exp) => {
-      const title = exp.role || exp.title || '';
-      const company = exp.company || '';
-      const heading = [title, company].filter(Boolean).join(' at ');
-      if (heading) {
-        doc.font(headingFont).fontSize(style.pdf.subheadingSize).fillColor(style.docx?.headingColor ? `#${style.docx.headingColor}` : style.pdf.headingColor).text(heading);
-      }
-      if (exp.dates) {
-        doc.font(bodyFont).fontSize(style.pdf.bodySize - 1).fillColor('#666').text(exp.dates);
-      }
-      if (exp.description) {
-        doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(exp.description, { lineGap: style.pdf.lineGap });
-      }
-      if (exp.bullets && Array.isArray(exp.bullets) && exp.bullets.length > 0) {
-        doc.moveDown(0.15);
-        // Limit to 2 bullets if one-page constraint
-        const bulletsToShow = limitToOnePage ? exp.bullets.slice(0, 2) : exp.bullets;
-        bulletsToShow.forEach((b) => {
-          doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(`• ${b}`, { lineGap: 1.6 });
-        });
-      }
-      doc.moveDown(style.pdf.sectionGap);
-    });
-  }
-
-  // Projects (skip if one-page constraint)
-  if (!limitToOnePage) {
-    const projects = parsed.projects;
-    if (projects) {
-      addSectionTitle(doc, 'Projects', style, layout);
-      if (Array.isArray(projects)) {
-        projects.forEach((p) => {
-          if (!p || typeof p !== 'object') return;
-          const name = p.name || '';
-          const org = p.organization || '';
-          const heading = [name, org].filter(Boolean).join(' — ');
-          if (heading) {
-            doc.font(headingFont).fontSize(style.pdf.subheadingSize).fillColor(style.docx?.headingColor ? `#${style.docx.headingColor}` : style.pdf.headingColor).text(heading);
-          }
-          if (p.dates) {
-            doc.font(bodyFont).fontSize(style.pdf.bodySize - 1).fillColor('#666').text(p.dates);
-          }
-          if (p.description) {
-            doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(p.description, { lineGap: style.pdf.lineGap });
-          }
-          if (Array.isArray(p.technologies) && p.technologies.length > 0) {
-            doc.moveDown(0.15);
-            doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(`Technologies: ${p.technologies.join(', ')}`, { lineGap: 1.55 });
-          }
-          doc.moveDown(0.5);
-        });
-      } else if (typeof projects === 'string') {
-        doc.font(bodyFont).fontSize(style.pdf.bodySize).fillColor(style.docx?.bodyColor ? `#${style.docx.bodyColor}` : style.pdf.bodyColor).text(projects, { lineGap: style.pdf.lineGap });
-      }
+function parseHtmlTokens(html) {
+  const tokens = [];
+  const re = /<(\/?)([a-z0-9]+)([^>]*)>|([^<]+)/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    if (m[2]) {
+      tokens.push({ type: m[1] ? 'close' : 'open', tag: m[2].toLowerCase(), attrs: m[3] || '' });
+    } else if (m[4] && m[4].trim()) {
+      tokens.push({ type: 'text', content: decodeEntities(m[4]) });
     }
   }
+  return tokens;
+}
+
+function buildHtmlTree(tokens) {
+  const root = { tag: 'root', children: [] };
+  const stack = [root];
+  const voidTags = new Set(['br', 'hr', 'img', 'input', 'meta', 'link']);
+  for (const tok of tokens) {
+    if (tok.type === 'text') {
+      stack[stack.length - 1].children.push({ tag: '#text', content: tok.content });
+    } else if (tok.type === 'open') {
+      const el = { tag: tok.tag, children: [] };
+      stack[stack.length - 1].children.push(el);
+      if (!voidTags.has(tok.tag)) stack.push(el);
+    } else if (tok.type === 'close' && stack.length > 1) {
+      stack.pop();
+    }
+  }
+  return root;
+}
+
+function getTextContent(node) {
+  if (!node) return '';
+  if (node.tag === '#text') return node.content || '';
+  return (node.children || []).map(getTextContent).join('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PDF section heading renderer — applies decoration per template style
+// ─────────────────────────────────────────────────────────────────────────────
+
+function renderPdfSectionHeading(doc, text, style, sectionHeadingStyle, bodyFont, headingFont, pageMarginLeft, pageMarginRight) {
+  const s = style.pdf;
+  const c = s.colors;
+  const layout = style.layout;
+
+  let displayText = text;
+  if (sectionHeadingStyle === 'uppercase-rule' || layout === 'centered') {
+    displayText = text.toUpperCase();
+  }
+
+  doc.font(headingFont).fontSize(s.headingSize).fillColor(c.heading || '#111').text(displayText);
+
+  const curY = doc.y;
+  // Decoration below/beside heading
+  if (sectionHeadingStyle === 'rule-below') {
+    doc.moveTo(pageMarginLeft, curY).lineTo(doc.page.width - pageMarginRight, curY)
+      .strokeColor(c.rule || '#cccccc').lineWidth(0.5).stroke();
+  } else if (sectionHeadingStyle === 'uppercase-rule') {
+    doc.moveTo(pageMarginLeft, curY).lineTo(doc.page.width - pageMarginRight, curY)
+      .strokeColor(c.rule || '#888888').lineWidth(0.5).stroke();
+  } else if (sectionHeadingStyle === 'accent-rule') {
+    doc.moveTo(pageMarginLeft, curY).lineTo(pageMarginLeft + 50, curY)
+      .strokeColor(c.accent || '#3b82f6').lineWidth(2).stroke();
+  } else if (sectionHeadingStyle === 'underline') {
+    doc.moveTo(pageMarginLeft, curY).lineTo(pageMarginLeft + doc.widthOfString(displayText), curY)
+      .strokeColor(c.heading || '#1e3a5f').lineWidth(0.8).stroke();
+  }
+  // 'left-accent' is drawn as a filled rect before the heading text
+  doc.moveDown(0.25);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTML tree → PDFKit renderer
+// ─────────────────────────────────────────────────────────────────────────────
+
+function renderHtmlNodeToPdf(doc, node, ctx) {
+  if (!node || node.tag === '#text') return;
+  const { style, headingFont, bodyFont, pageMarginLeft, pageMarginRight } = ctx;
+  const s = style.pdf;
+  const c = s.colors;
+  const shs = style.sectionHeadingStyle || 'rule-below';
+
+  switch (node.tag) {
+    case 'h1': {
+      const text = getTextContent(node).trim();
+      if (!text) return;
+      doc.font(headingFont).fontSize(s.titleSize).fillColor(c.title || '#111').text(text);
+      break;
+    }
+    case 'h2': {
+      const text = getTextContent(node).trim();
+      if (!text) return;
+      doc.moveDown(s.sectionGap || 0.5);
+      // left-accent: draw bar before heading text
+      if (shs === 'left-accent') {
+        const barH = s.headingSize * 1.4;
+        const barY = doc.y;
+        doc.rect(pageMarginLeft - 8, barY, 3, barH).fill(c.accent || '#1e40af');
+      }
+      renderPdfSectionHeading(doc, text, style, shs, bodyFont, headingFont, pageMarginLeft, pageMarginRight);
+      break;
+    }
+    case 'h3': {
+      const text = getTextContent(node).trim();
+      if (!text) return;
+      doc.moveDown(0.3);
+      doc.font(headingFont).fontSize(s.subheadingSize || s.headingSize).fillColor(c.heading || '#111').text(text);
+      break;
+    }
+    case 'p': {
+      const text = getTextContent(node).trim();
+      if (!text) return;
+      doc.moveDown(0.15);
+      doc.font(bodyFont).fontSize(s.bodySize).fillColor(c.body || '#222').text(text, { lineGap: s.lineGap || 2 });
+      break;
+    }
+    case 'ul':
+    case 'ol': {
+      (node.children || []).forEach(li => {
+        if (li.tag !== 'li') return;
+        const text = getTextContent(li).trim();
+        if (text) doc.font(bodyFont).fontSize(s.bodySize).fillColor(c.body || '#222')
+          .text('\u2022 ' + text, { lineGap: 1.8 });
+      });
+      break;
+    }
+    case 'table': {
+      renderHtmlTableToPdf(doc, node, ctx);
+      ctx.tableIndex = (ctx.tableIndex || 0) + 1;
+      break;
+    }
+    default: {
+      (node.children || []).forEach(child => renderHtmlNodeToPdf(doc, child, ctx));
+    }
+  }
+}
+
+function renderHtmlTableToPdf(doc, tableNode, ctx) {
+  const { style, headingFont, bodyFont, pageMarginLeft, pageMarginRight } = ctx;
+  const layout = style.layout;
+  const s = style.pdf;
+  const c = s.colors;
+  const tableIndex = ctx.tableIndex || 0;
+
+  const tbody = tableNode.children.find(n => n.tag === 'tbody') || tableNode;
+  const rows = (tbody.children || []).filter(n => n.tag === 'tr');
+  if (!rows.length) return;
+  const cells = (rows[0].children || []).filter(n => n.tag === 'td' || n.tag === 'th');
+
+  // Header-band: first table, single cell → draw dark band
+  if (layout === 'header-band' && tableIndex === 0 && cells.length === 1) {
+    const bandH = 72;
+    doc.rect(0, 0, doc.page.width, bandH).fill(c.headerBand || '#111827');
+    doc.y = 14;
+    const cellContent = cells[0];
+    (cellContent.children || []).forEach(n => {
+      const text = getTextContent(n).trim();
+      if (!text) return;
+      const isName = n.tag === 'h1' || n.tag === 'strong';
+      doc.x = pageMarginLeft;
+      doc.font(isName ? headingFont : bodyFont)
+        .fontSize(isName ? s.titleSize : s.smallSize || 9)
+        .fillColor(isName ? '#ffffff' : (c.headerContact || '#d1d5db'))
+        .text(text, { align: 'left' });
+    });
+    doc.moveDown(0.5);
+    return;
+  }
+
+  // Sidebar: 2-cell table → render two-column layout
+  if (layout === 'sidebar' && cells.length >= 2) {
+    renderSidebarColumnsToPdf(doc, cells[0], cells[1], ctx);
+    return;
+  }
+
+  // Accent-strip: first table, 2-cell (left=decorative, right=content)
+  if (layout === 'accent-strip' && tableIndex === 0 && cells.length >= 2) {
+    const rightCell = cells[1];
+    (rightCell.children || []).forEach(n => renderHtmlNodeToPdf(doc, n, ctx));
+    return;
+  }
+
+  // Default: flatten all cells
+  rows.forEach(row => {
+    (row.children || []).filter(c => c.tag === 'td' || c.tag === 'th').forEach(cell => {
+      (cell.children || []).forEach(n => renderHtmlNodeToPdf(doc, n, ctx));
+    });
+  });
+}
+
+function renderNodeInColumn(doc, node, ctx, colX, colW, isLeft) {
+  if (!node || node.tag === '#text') return;
+  const { style, headingFont, bodyFont } = ctx;
+  const s = style.pdf;
+  const c = isLeft ? {
+    title:   s.colors.sidebarTitle   || '#ffffff',
+    heading: s.colors.sidebarHeading || '#94a3b8',
+    body:    s.colors.sidebarBody    || '#e2e8f0',
+    meta:    s.colors.sidebarMeta    || '#94a3b8',
+  } : s.colors;
+  const shs = style.sectionHeadingStyle || 'plain';
+
+  switch (node.tag) {
+    case 'h1': {
+      const text = getTextContent(node).trim();
+      if (!text) return;
+      doc.font(headingFont).fontSize(s.titleSize).fillColor(c.title || '#111')
+        .text(text, colX, doc.y, { width: colW });
+      break;
+    }
+    case 'h2': {
+      const text = getTextContent(node).trim();
+      if (!text) return;
+      doc.moveDown(0.4);
+      doc.font(headingFont).fontSize(s.headingSize).fillColor(c.heading || '#94a3b8')
+        .text(text, colX, doc.y, { width: colW });
+      const curY = doc.y;
+      doc.moveTo(colX, curY).lineTo(colX + colW, curY)
+        .strokeColor(c.heading || '#94a3b8').lineWidth(0.4).stroke();
+      doc.moveDown(0.2);
+      break;
+    }
+    case 'h3': {
+      const text = getTextContent(node).trim();
+      if (!text) return;
+      doc.moveDown(0.2);
+      doc.font(headingFont).fontSize(s.subheadingSize || s.headingSize).fillColor(c.heading || '#888')
+        .text(text, colX, doc.y, { width: colW });
+      break;
+    }
+    case 'p': {
+      const text = getTextContent(node).trim();
+      if (!text) return;
+      doc.moveDown(0.12);
+      doc.font(bodyFont).fontSize(s.bodySize).fillColor(c.body || '#ccc')
+        .text(text, colX, doc.y, { width: colW, lineGap: s.lineGap || 2 });
+      break;
+    }
+    case 'ul':
+    case 'ol': {
+      (node.children || []).forEach(li => {
+        if (li.tag !== 'li') return;
+        const text = getTextContent(li).trim();
+        if (text) doc.font(bodyFont).fontSize(s.bodySize).fillColor(c.body || '#ccc')
+          .text('\u2022 ' + text, colX, doc.y, { width: colW, lineGap: 1.8 });
+      });
+      break;
+    }
+    default: {
+      (node.children || []).forEach(child => renderNodeInColumn(doc, child, ctx, colX, colW, isLeft));
+    }
+  }
+}
+
+function renderSidebarColumnsToPdf(doc, leftCell, rightCell, ctx) {
+  const { style, headingFont, bodyFont } = ctx;
+  const s = style.pdf;
+  const c = s.colors;
+  const innerMargin = 14;
+  const pageW = doc.page.width;
+  const pageH = doc.page.height;
+  const leftColW = Math.round(pageW * (s.leftColFraction || 0.30));
+  const rightX = leftColW + innerMargin;
+  const rightW = pageW - leftColW - innerMargin * 2;
+  const startY = 14;
+
+  // Draw sidebar background on full page height
+  doc.rect(0, 0, leftColW, pageH).fill(c.sidebarBg || '#1e293b');
+
+  // Render left column content
+  doc.y = startY;
+  (leftCell.children || []).forEach(n => renderNodeInColumn(doc, n, ctx, innerMargin, leftColW - innerMargin * 2, true));
+  const leftEndY = doc.y;
+
+  // Render right column content
+  doc.y = startY;
+  (rightCell.children || []).forEach(n => renderNodeInColumn(doc, n, ctx, rightX, rightW, false));
+  const rightEndY = doc.y;
+
+  doc.y = Math.max(leftEndY, rightEndY);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Async DOCX-first PDF builder — generates DOCX, converts to HTML, renders PDF
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function buildResumePdf(parsed = {}, tailored = null, templateKey = 'classic', limitToOnePage = false) {
+  const style = getTemplate(templateKey);
+  const layout = style.layout || 'traditional';
+  const s = style.pdf;
+  const c = s.colors;
+
+  // 1. Generate DOCX (source of truth)
+  const docxBuffer = await buildResumeDocx(parsed, tailored, templateKey, limitToOnePage);
+
+  // 2. Convert DOCX → HTML via mammoth
+  const { value: html } = await mammoth.convertToHtml({ buffer: docxBuffer });
+
+  // 3. Render HTML → PDF
+  const headingFont = resolvePdfFont(s.headingFont || s.font, true);
+  const bodyFont = resolvePdfFont(s.font, false);
+
+  const margin = s.margin || 50;
+  const leftMargin = (layout === 'sidebar' || layout === 'header-band' || layout === 'accent-strip') ? 0 : margin;
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({
+      size: 'A4',
+      margins: { top: leftMargin, bottom: margin, left: leftMargin, right: margin },
+      autoFirstPage: true,
+    });
+    const chunks = [];
+    doc.on('data', chunk => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    // Accent strip: draw vertical bar before content
+    if (layout === 'accent-strip') {
+      const barW = s.accentBarWidth || 6;
+      doc.rect(0, 0, barW, doc.page.height).fill(c.accentBar || c.accent || '#7c3aed');
+    }
+
+    const tree = buildHtmlTree(parseHtmlTokens(html));
+    const pageMarginLeft = (layout === 'accent-strip') ? (margin + (s.accentBarWidth || 6) + 4) : margin;
+    const pageMarginRight = margin;
+
+    const ctx = {
+      style,
+      headingFont,
+      bodyFont,
+      pageMarginLeft,
+      pageMarginRight,
+      tableIndex: 0,
+    };
+
+    // Set initial cursor position
+    if (layout !== 'sidebar' && layout !== 'header-band' && layout !== 'accent-strip') {
+      doc.x = pageMarginLeft;
+      doc.y = margin;
+    } else {
+      doc.x = 0;
+      doc.y = 0;
+    }
+
+    for (const node of (tree.children || [])) {
+      renderHtmlNodeToPdf(doc, node, ctx);
+    }
+
+    doc.end();
+  });
 }
 
 // Build PDF cover letter (mirrors DOCX layout/colors)
@@ -744,209 +1236,681 @@ function buildCoverPdf(doc, parsed = {}, templateKey = 'classic', cover = {}, li
   doc.font(headingFont).fontSize(style.pdf.subheadingSize).fillColor(style.docx?.headingColor ? `#${style.docx.headingColor}` : style.pdf.headingColor).text(parsed.name || 'Your Name');
 }
 
-// Build DOCX resume
+// Build DOCX resume — HTML-first pipeline: renderTemplate → html-to-docx
 async function buildResumeDocx(parsed = {}, tailored = null, templateKey = 'classic', limitToOnePage = false) {
-  const style = getTemplate(templateKey);
-  const layout = style.layout || 'traditional';
+  const config = getConfig(templateKey);
+  const data = mapToTemplateData(parsed, tailored, limitToOnePage, config);
+  const htmlString = renderTemplate(templateKey, data, { inlineCssVars: true });
+  return await htmlToDocx(htmlString, null, config.docxExportOptions);
+}
+
+// Manual DOCX builder — legacy fallback; uses docx library directly
+async function buildResumeDocxManual(parsed = {}, tailored = null, templateKey = 'classic', limitToOnePage = false) {
+  const config = getConfig(templateKey);
+  const data = mapToTemplateData(parsed, tailored, limitToOnePage, config);
   const children = [];
 
-  // Adjust spacing for one-page constraint
-  const spacing = limitToOnePage ? {
-    titleAfter: style.docx.titleAfter ? Math.floor(style.docx.titleAfter * 0.7) : 80,
-    contactAfter: style.docx.contactAfter ? Math.floor(style.docx.contactAfter * 0.7) : 80,
-    headingBefore: style.docx.headingBefore ? Math.floor(style.docx.headingBefore * 0.6) : 60,
-    headingAfter: style.docx.headingAfter ? Math.floor(style.docx.headingAfter * 0.6) : 60,
-    bodyAfter: style.docx.bodyAfter ? Math.floor(style.docx.bodyAfter * 0.6) : 60,
-    bulletSpacing: style.docx.bulletSpacing ? Math.floor(style.docx.bulletSpacing * 0.6) : 40,
-  } : style.docx;
+  // Derive font/size from template CSS vars
+  const cssVars = config.cssVars || {};
+  const bodyFont = (cssVars['--font-family'] || "'Georgia', serif")
+    .replace(/["']/g, '').split(',')[0].trim() || 'Georgia';
+  const headingFont = (cssVars['--heading-font'] || "'Impact', sans-serif")
+    .replace(/["']/g, '').split(',')[0].trim() || 'Impact';
+  const basePt = parseInt(cssVars['--base-font-size'] || '10pt') || 10;
+  const baseSz = basePt * 2;  // half-points (docx unit)
+  const margins = (config.docxExportOptions && config.docxExportOptions.margins)
+    || { top: 1080, bottom: 1440, left: 1440, right: 1440 };
+  const tabRight = 12240 - (margins.left || 1440) - (margins.right || 1440);
 
-  const name = parsed.name || 'Resume';
-  const contact = [parsed.email, parsed.phone, parsed.location].filter(Boolean).join(' · ');
-
-  // Determine alignment and sizing based on layout
-  const titleAlignment = (layout === 'centered' || layout === 'formal' || layout === 'minimalist' || layout === 'minimal' || layout === 'high-contrast' || layout === 'block-headers') ? AlignmentType.CENTER : AlignmentType.LEFT;
-  const headingAlignment = (layout === 'block-headers') ? AlignmentType.CENTER : AlignmentType.LEFT;
-
-  // Scale font sizes from PDF template proportionally (PDF uses points directly, DOCX uses half-points)
-  const titleSizeDocx = Math.round(style.pdf.titleSize * 2); // Convert to half-points
-  const headingSizeDocx = Math.round(style.pdf.headingSize * 2);
-  const bodySizeDocx = Math.round(style.pdf.bodySize * 2);
-
+  // ── Helpers ──────────────────────────────────────────────────────────────
   const addHeading = (text) => {
-    const headingText = (layout === 'formal') ? text.toUpperCase() : text;
-    const underline = (layout === 'accented' || layout === 'minimalist') ? { type: UnderlineType.SINGLE } : undefined;
     children.push(new Paragraph({
       heading: HeadingLevel.HEADING_2,
+      spacing: { before: 200, after: 100 },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '434343' } },
+      children: [new TextRun({ text: text.toUpperCase(), font: headingFont, size: baseSz, color: '434343' })],
+    }));
+  };
+
+  const addItemRow = (left, right) => {
+    const runs = [new TextRun({ text: left || '', font: bodyFont, size: baseSz })];
+    if (right) runs.push(new TextRun({ text: '\t' + right, font: bodyFont, size: baseSz }));
+    children.push(new Paragraph({
+      spacing: { after: 40 },
+      tabStops: [{ type: TabStopType.RIGHT, position: tabRight }],
+      children: runs,
+    }));
+  };
+
+  const addSubtitle = (text) => {
+    if (!text) return;
+    children.push(new Paragraph({
+      spacing: { after: 60 },
+      children: [new TextRun({ text, font: bodyFont, size: Math.round(baseSz * 0.85), italics: true })],
+    }));
+  };
+
+  const addParagraph = (text, italic = false) => {
+    if (!text) return;
+    children.push(new Paragraph({
+      spacing: { after: 120 },
+      children: [new TextRun({ text, font: bodyFont, size: baseSz, italics: italic })],
+    }));
+  };
+
+  const addBullet = (text) => {
+    if (!text) return;
+    children.push(new Paragraph({
+      bullet: { level: 0 },
+      spacing: { after: 60 },
+      children: [new TextRun({ text, font: bodyFont, size: baseSz })],
+    }));
+  };
+
+  // ── Name + contact ────────────────────────────────────────────────────────
+  if (data.personalInfo.fullName) {
+    children.push(new Paragraph({
+      heading: HeadingLevel.TITLE,
+      spacing: { after: 80 },
+      children: [new TextRun({ text: data.personalInfo.fullName.toUpperCase(), font: headingFont, size: 36 })],
+    }));
+  }
+  if (data.personalInfo.contact) {
+    children.push(new Paragraph({
+      spacing: { after: 200 },
+      children: [new TextRun({ text: data.personalInfo.contact, font: bodyFont, size: Math.round(baseSz * 0.9) })],
+    }));
+  }
+
+  // ── Sections ─────────────────────────────────────────────────────────────
+  for (const sectionKey of data.activeSections) {
+    switch (sectionKey) {
+      case 'objective':
+        addHeading(config.sectionLabels.objective || 'Objective');
+        addParagraph(data.personalInfo.objective, true);
+        break;
+
+      case 'skills':
+        addHeading(config.sectionLabels.skills || 'Technical Skills');
+        if (data.skillsGrouped && Object.keys(data.skillsGrouped).length > 0) {
+          for (const [cat, skills] of Object.entries(data.skillsGrouped)) {
+            if (Array.isArray(skills) && skills.length > 0) {
+              children.push(new Paragraph({
+                spacing: { after: 60 },
+                children: [
+                  new TextRun({ text: cat + ': ', font: bodyFont, size: baseSz, bold: true }),
+                  new TextRun({ text: skills.join(', '), font: bodyFont, size: baseSz }),
+                ],
+              }));
+            }
+          }
+        } else if (data.technicalSkills.length > 0) {
+          addParagraph(data.technicalSkills.join(', '));
+        }
+        break;
+
+      case 'education':
+        addHeading(config.sectionLabels.education || 'Education');
+        for (const edu of data.education) {
+          addItemRow(edu.institution, edu.dateRange);
+          addSubtitle(edu.degree);
+        }
+        break;
+
+      case 'experience':
+        addHeading(config.sectionLabels.experience || 'Experience');
+        for (const exp of data.experience) {
+          addItemRow(exp.company, exp.dateRange);
+          addSubtitle(exp.role);
+          for (const b of exp.bulletPoints) addBullet(b);
+        }
+        break;
+
+      case 'projects':
+        addHeading(config.sectionLabels.projects || 'Academic Projects');
+        for (const p of data.academicProjects) {
+          const tech = p.technologies && p.technologies.length > 0
+            ? ' (' + p.technologies.join(', ') + ')' : '';
+          children.push(new Paragraph({
+            bullet: { level: 0 },
+            spacing: { after: 60 },
+            children: [
+              new TextRun({ text: (p.title || '') + ': ', font: bodyFont, size: baseSz, bold: true }),
+              new TextRun({ text: (p.description || '') + tech, font: bodyFont, size: baseSz }),
+            ],
+          }));
+        }
+        break;
+
+      case 'certifications':
+        addHeading(config.sectionLabels.certifications || 'Certifications');
+        for (const c of data.certifications) {
+          addBullet([c.name, c.issuer, c.date].filter(Boolean).join(' \u2014 '));
+        }
+        break;
+
+      case 'awards':
+        addHeading(config.sectionLabels.awards || 'Awards & Honors');
+        for (const a of data.awards) {
+          addBullet([a.title, a.issuer, a.date].filter(Boolean).join(' \u2014 '));
+        }
+        break;
+
+      case 'languages':
+        addHeading(config.sectionLabels.languages || 'Languages');
+        addParagraph(data.languages.join(', '));
+        break;
+    }
+  }
+
+  const doc = new Document({
+    sections: [{ properties: { page: { margin: margins } }, children }],
+  });
+  return Packer.toBuffer(doc);
+}
+
+// Legacy DOCX builder — kept for reference; uses docx library directly
+async function buildResumeDocxLegacy(parsed = {}, tailored = null, templateKey = 'classic', limitToOnePage = false) {
+  const style = getTemplate(templateKey);
+  const layout = style.layout || 'traditional';
+  const dc = style.docx;
+  const sp = dc.spacing || {};
+
+  // Adjusted spacing for one-page mode
+  const spacing = limitToOnePage ? {
+    titleAfter:    Math.floor((sp.titleAfter    || 140) * 0.7),
+    contactAfter:  Math.floor((sp.contactAfter  || 200) * 0.7),
+    headingBefore: Math.floor((sp.headingBefore || 200) * 0.6),
+    headingAfter:  Math.floor((sp.headingAfter  || 110) * 0.6),
+    bodyAfter:     Math.floor((sp.bodyAfter     || 115) * 0.6),
+    bulletSpacing: Math.floor((sp.bulletSpacing ||  85) * 0.6),
+  } : {
+    titleAfter:    sp.titleAfter    || 140,
+    contactAfter:  sp.contactAfter  || 200,
+    headingBefore: sp.headingBefore || 200,
+    headingAfter:  sp.headingAfter  || 110,
+    bodyAfter:     sp.bodyAfter     || 115,
+    bulletSpacing: sp.bulletSpacing ||  85,
+  };
+
+  const name = parsed.name || 'Resume';
+  const contactParts = [parsed.email, parsed.phone, parsed.location].filter(Boolean);
+  if (parsed.links) {
+    if (parsed.links.linkedin) contactParts.push(parsed.links.linkedin);
+    else if (parsed.links.github) contactParts.push(parsed.links.github);
+    else if (parsed.links.portfolio) contactParts.push(parsed.links.portfolio);
+  }
+  const contact = contactParts.join(' \u00B7 ');
+
+  const isCentered = layout === 'centered';
+  const titleAlign = isCentered ? AlignmentType.CENTER : AlignmentType.LEFT;
+  const headingAlign = AlignmentType.LEFT;
+
+  const titleSizeDocx = Math.round(style.pdf.titleSize * 2);
+  const headingSizeDocx = Math.round(style.pdf.headingSize * 2);
+  const subheadingSizeDocx = Math.round((style.pdf.subheadingSize || style.pdf.headingSize) * 2);
+  const bodySizeDocx = Math.round(style.pdf.bodySize * 2);
+  const smallSizeDocx = Math.round((style.pdf.smallSize || style.pdf.bodySize - 1) * 2);
+
+  const shs = style.sectionHeadingStyle || 'rule-below';
+  const colors = dc.colors || {};
+
+  // ── DOCX helper functions ─────────────────────────────────────────────────
+
+  const noBorder = { style: BorderStyle.NONE, size: 0, color: 'auto' };
+  const allNoBorders = { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder };
+
+  // Build a heading paragraph with decoration based on sectionHeadingStyle
+  const makeHeadingParagraph = (text, targetChildren) => {
+    const displayText = (shs === 'uppercase-rule' || isCentered) ? text.toUpperCase() : text;
+    const underline = shs === 'underline' ? { type: UnderlineType.SINGLE } : undefined;
+    const para = new Paragraph({
+      heading: HeadingLevel.HEADING_2,
       spacing: { before: spacing.headingBefore, after: spacing.headingAfter },
-      alignment: headingAlignment,
-      children: [new TextRun({ 
-        text: headingText, 
-        font: style.docx.headingFont || style.docx.font || 'Calibri', 
+      alignment: headingAlign,
+      border: shs === 'left-accent' ? {
+        left: { style: BorderStyle.THICK, size: 18, color: colors.accent || '1e40af' }
+      } : undefined,
+      children: [new TextRun({
+        text: displayText,
+        font: dc.headingFont || dc.font || 'Calibri',
         bold: true,
         size: headingSizeDocx,
-        underline: underline,
-        color: style.docx.headingColor || undefined
+        underline,
+        color: colors.heading || undefined,
       })],
-    }));
+    });
+    targetChildren.push(para);
   };
 
-  const subheadingSizeDocx = Math.round(style.pdf.subheadingSize * 2);
-
-  const addSubheading = (text) => {
+  const makeSubheadingParagraph = (text, targetChildren) => {
     if (!text) return;
-    children.push(new Paragraph({
+    targetChildren.push(new Paragraph({
       spacing: { before: limitToOnePage ? 60 : 100, after: limitToOnePage ? 40 : 60 },
-      children: [new TextRun({ 
-        text, 
-        font: style.docx.headingFont || style.docx.font || 'Calibri', 
+      children: [new TextRun({
+        text,
+        font: dc.headingFont || dc.font || 'Calibri',
         bold: true,
         size: subheadingSizeDocx,
-        color: style.docx.headingColor || undefined
+        color: colors.heading || undefined,
       })],
     }));
   };
 
-  const addBullet = (text, level = 0) => {
+  const makeBulletParagraph = (text, targetChildren) => {
     if (!text) return;
-    children.push(new Paragraph({
-      bullet: { level },
+    targetChildren.push(new Paragraph({
+      bullet: { level: 0 },
       spacing: { after: spacing.bulletSpacing },
-      children: [new TextRun({ text, font: style.docx.font || 'Calibri', size: bodySizeDocx, color: style.docx.bodyColor || undefined })],
+      children: [new TextRun({ text, font: dc.font || 'Calibri', size: bodySizeDocx, color: colors.body || undefined })],
     }));
   };
 
-  const addText = (text, spacingAfter = spacing.bodyAfter, indent = 0) => {
+  const makeTextParagraph = (text, targetChildren, spacingAfter = spacing.bodyAfter) => {
     if (!text) return;
-    children.push(new Paragraph({
+    targetChildren.push(new Paragraph({
       spacing: { after: spacingAfter },
-      indent: { left: indent },
-      children: [new TextRun({ text, font: style.docx.font || 'Calibri', size: bodySizeDocx, color: style.docx.bodyColor || undefined })],
+      children: [new TextRun({ text, font: dc.font || 'Calibri', size: bodySizeDocx, color: colors.body || undefined })],
     }));
   };
 
-  // Header with proper sizing
-  children.push(new Paragraph({
-    heading: HeadingLevel.TITLE,
-    spacing: { after: spacing.titleAfter },
-    alignment: titleAlignment,
-    children: [new TextRun({ 
-      text: name, 
-      font: style.docx.headingFont || style.docx.font || 'Calibri', 
-      bold: true,
-      size: titleSizeDocx,
-      color: style.docx.titleColor || undefined
-    })],
-  }));
-  if (contact) {
-    children.push(new Paragraph({ 
-      spacing: { after: spacing.contactAfter }, 
-      alignment: titleAlignment,
-      children: [new TextRun({ 
-        text: contact, 
-        font: style.docx.font || 'Calibri',
-        size: bodySizeDocx,
-        color: style.docx.contactColor || undefined
-      })] 
+  const makeSmallTextParagraph = (text, targetChildren, spacingAfter = spacing.bodyAfter) => {
+    if (!text) return;
+    targetChildren.push(new Paragraph({
+      spacing: { after: spacingAfter },
+      children: [new TextRun({ text, font: dc.font || 'Calibri', size: smallSizeDocx, color: colors.meta || '777777' })],
     }));
+  };
+
+  // ── Section content builder (populates an array of Paragraphs) ───────────
+
+  const buildSectionContent = (targetChildren) => {
+    const renderSummary = () => {
+      const summary = tailored?.tailored_summary || parsed.summary;
+      if (!summary) return;
+      makeHeadingParagraph('Summary', targetChildren);
+      makeTextParagraph(summary, targetChildren);
+    };
+
+    const renderSkills = () => {
+      const grouped = tailored?.skills_grouped;
+      const flat = (tailored?.target_skills?.length > 0) ? tailored.target_skills : (parsed.skills || []);
+      if (grouped && typeof grouped === 'object' && Object.keys(grouped).length > 0) {
+        makeHeadingParagraph('Skills', targetChildren);
+        Object.entries(grouped).forEach(([groupName, skills]) => {
+          if (!Array.isArray(skills) || skills.length === 0) return;
+          targetChildren.push(new Paragraph({
+            spacing: { after: Math.round(spacing.bodyAfter * 0.7) },
+            children: [
+              new TextRun({ text: groupName + ': ', font: dc.headingFont || dc.font || 'Calibri', bold: true, size: bodySizeDocx, color: colors.heading || undefined }),
+              new TextRun({ text: skills.join(', '), font: dc.font || 'Calibri', size: bodySizeDocx, color: colors.body || undefined }),
+            ],
+          }));
+        });
+      } else if (flat.length > 0) {
+        makeHeadingParagraph('Skills', targetChildren);
+        makeTextParagraph(Array.isArray(flat) ? flat.join(', ') : flat, targetChildren);
+      }
+    };
+
+    const renderEducation = () => {
+      if (!parsed.education || !Array.isArray(parsed.education) || parsed.education.length === 0) return;
+      makeHeadingParagraph('Education', targetChildren);
+      parsed.education.forEach((edu) => {
+        if (!edu || typeof edu !== 'object') return;
+        const heading = [edu.degree, edu.field].filter(Boolean).join(' in ');
+        if (heading) makeSubheadingParagraph(heading, targetChildren);
+        if (edu.school) makeTextParagraph(edu.school, targetChildren, 80);
+        const eduMeta = [edu.dates, edu.gpa ? `GPA: ${edu.gpa}` : null].filter(Boolean).join('  \u00B7  ');
+        if (eduMeta) makeSmallTextParagraph(eduMeta, targetChildren);
+      });
+    };
+
+    const renderExperience = () => {
+      const expList = (tailored?.tailored_experience?.length > 0) ? tailored.tailored_experience : (parsed.experience || []);
+      if (!Array.isArray(expList) || expList.length === 0) return;
+      makeHeadingParagraph('Experience', targetChildren);
+      const itemsToShow = limitToOnePage ? expList.slice(0, 3) : expList;
+      itemsToShow.forEach((exp) => {
+        if (!exp || typeof exp !== 'object') return;
+        const title = exp.role || exp.title || '';
+        const company = exp.company || '';
+        const heading = [title, company].filter(Boolean).join(' at ');
+        if (heading) makeSubheadingParagraph(heading, targetChildren);
+        if (exp.dates) makeSmallTextParagraph(exp.dates, targetChildren, limitToOnePage ? 40 : 80);
+        if (Array.isArray(exp.bullets) && exp.bullets.length > 0) {
+          const bulletsToShow = limitToOnePage ? exp.bullets.slice(0, 2) : exp.bullets;
+          bulletsToShow.forEach((b) => makeBulletParagraph(b, targetChildren));
+        } else if (exp.description) {
+          makeTextParagraph(exp.description, targetChildren, limitToOnePage ? 60 : 100);
+        }
+      });
+    };
+
+    const renderProjects = () => {
+      if (limitToOnePage) return;
+      const projects = (tailored?.tailored_projects?.length > 0) ? tailored.tailored_projects : (parsed.projects || []);
+      if (!Array.isArray(projects) || projects.length === 0) return;
+      makeHeadingParagraph('Projects', targetChildren);
+      projects.forEach((p) => {
+        if (!p || typeof p !== 'object') return;
+        const heading = [p.name, p.organization].filter(Boolean).join(' \u2014 ');
+        if (heading) makeSubheadingParagraph(heading, targetChildren);
+        if (p.dates) makeSmallTextParagraph(p.dates, targetChildren, 80);
+        if (p.description) makeTextParagraph(p.description, targetChildren, 100);
+        if (Array.isArray(p.technologies) && p.technologies.length > 0) {
+          targetChildren.push(new Paragraph({
+            spacing: { after: spacing.bodyAfter },
+            children: [
+              new TextRun({ text: 'Technologies: ', font: dc.font || 'Calibri', size: bodySizeDocx, bold: true, color: colors.body || undefined }),
+              new TextRun({ text: p.technologies.join(', '), font: dc.font || 'Calibri', size: bodySizeDocx, color: colors.body || undefined }),
+            ],
+          }));
+        }
+      });
+    };
+
+    const renderCertifications = () => {
+      if (!parsed.certifications || !Array.isArray(parsed.certifications) || parsed.certifications.length === 0) return;
+      makeHeadingParagraph('Certifications', targetChildren);
+      parsed.certifications.forEach((cert) => {
+        const parts = [cert.name, cert.issuer, cert.date].filter(Boolean);
+        if (parts.length > 0) makeTextParagraph(parts.join(' \u2014 '), targetChildren);
+      });
+    };
+
+    const renderAwards = () => {
+      if (!parsed.awards || !Array.isArray(parsed.awards) || parsed.awards.length === 0) return;
+      makeHeadingParagraph('Awards & Honors', targetChildren);
+      parsed.awards.forEach((award) => {
+        const parts = [award.title, award.issuer, award.date].filter(Boolean);
+        if (parts.length > 0) makeTextParagraph(parts.join(' \u2014 '), targetChildren);
+      });
+    };
+
+    const defaultSections = ['summary', 'skills', 'education', 'experience', 'projects'];
+    const sectionOrder = (tailored?.sections && Array.isArray(tailored.sections) && tailored.sections.length > 0)
+      ? tailored.sections : defaultSections;
+    const renderers = { summary: renderSummary, skills: renderSkills, education: renderEducation, experience: renderExperience, projects: renderProjects, certifications: renderCertifications, awards: renderAwards };
+    for (const section of sectionOrder) { if (renderers[section]) renderers[section](); }
+    if (!sectionOrder.includes('certifications')) renderCertifications();
+    if (!sectionOrder.includes('awards')) renderAwards();
+  };
+
+  // ── Build Document based on layout ────────────────────────────────────────
+
+  let docxSections;
+  const docxMargins = dc.margins || { top: 720, bottom: 720, left: 720, right: 720 };
+
+  if (layout === 'sidebar') {
+    // ── Sidebar: Table with left dark col + right main col ──────────────────
+    const leftColPct = dc.leftColPct || 30;
+    const rightColPct = 100 - leftColPct;
+
+    // Left column: name + contact + skills
+    const leftChildren = [];
+    leftChildren.push(new Paragraph({
+      spacing: { after: spacing.titleAfter },
+      children: [new TextRun({ text: name, font: dc.headingFont || dc.font || 'Calibri', bold: true, size: titleSizeDocx, color: colors.sidebarTitle || 'ffffff' })],
+    }));
+    if (contact) {
+      leftChildren.push(new Paragraph({
+        spacing: { after: spacing.contactAfter },
+        children: [new TextRun({ text: contact, font: dc.font || 'Calibri', size: smallSizeDocx, color: colors.sidebarBody || 'e2e8f0' })],
+      }));
+    }
+    // Skills always in sidebar
+    const skillsGrouped = tailored?.skills_grouped;
+    const skillsFlat = (tailored?.target_skills?.length > 0) ? tailored.target_skills : (parsed.skills || []);
+    leftChildren.push(new Paragraph({
+      spacing: { before: spacing.headingBefore, after: spacing.headingAfter },
+      children: [new TextRun({ text: 'Skills', font: dc.headingFont || dc.font || 'Calibri', bold: true, size: headingSizeDocx, color: colors.sidebarHeading || '94a3b8' })],
+    }));
+    if (skillsGrouped && typeof skillsGrouped === 'object' && Object.keys(skillsGrouped).length > 0) {
+      Object.entries(skillsGrouped).forEach(([groupName, skills]) => {
+        if (!Array.isArray(skills) || skills.length === 0) return;
+        leftChildren.push(new Paragraph({
+          spacing: { after: Math.round(spacing.bodyAfter * 0.6) },
+          children: [
+            new TextRun({ text: groupName + ': ', font: dc.headingFont || dc.font || 'Calibri', bold: true, size: bodySizeDocx, color: colors.sidebarHeading || '94a3b8' }),
+            new TextRun({ text: skills.join(', '), font: dc.font || 'Calibri', size: bodySizeDocx, color: colors.sidebarBody || 'e2e8f0' }),
+          ],
+        }));
+      });
+    } else if (skillsFlat.length > 0) {
+      leftChildren.push(new Paragraph({
+        spacing: { after: spacing.bodyAfter },
+        children: [new TextRun({ text: skillsFlat.join(', '), font: dc.font || 'Calibri', size: bodySizeDocx, color: colors.sidebarBody || 'e2e8f0' })],
+      }));
+    }
+
+    // Right column: all other sections
+    const rightChildren = [];
+    const sidebarDefaultSections = ['summary', 'experience', 'education', 'projects'];
+    const sectionOrder = (tailored?.sections && Array.isArray(tailored.sections) && tailored.sections.length > 0)
+      ? tailored.sections.filter(s => s !== 'skills') : sidebarDefaultSections;
+    const tempChildren = [];
+    buildSectionContent(tempChildren);
+    // Filter out skills-related headings from tempChildren (already in sidebar)
+    // We just push all since the sidebar section order omits skills
+    rightChildren.push(...tempChildren.filter((p, i) => {
+      // A rough heuristic: keep all paragraphs since the right column's buildSectionContent
+      // already skips skills when we pass a custom sectionOrder — but buildSectionContent
+      // uses its own internal sectionOrder, so we rebuild right-side only:
+      return true;
+    }));
+    // Actually rebuild right side without skills:
+    rightChildren.length = 0;
+    const rightSectionOrder = (tailored?.sections && Array.isArray(tailored.sections) && tailored.sections.length > 0)
+      ? tailored.sections.filter(s => s !== 'skills')
+      : ['summary', 'experience', 'education', 'projects', 'certifications', 'awards'];
+
+    const expList2 = (tailored?.tailored_experience?.length > 0) ? tailored.tailored_experience : (parsed.experience || []);
+    if (expList2.length > 0 || parsed.summary) {
+      // Build right side content manually using same helpers but targeting rightChildren
+      buildSectionContentForTarget(rightChildren, parsed, tailored, limitToOnePage, style, spacing, rightSectionOrder, makeHeadingParagraph, makeSubheadingParagraph, makeTextParagraph, makeSmallTextParagraph, makeBulletParagraph, bodySizeDocx, dc, colors);
+    }
+
+    const sidebarTable = new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [new TableRow({
+        children: [
+          new TableCell({
+            width: { size: leftColPct, type: WidthType.PERCENTAGE },
+            shading: { fill: colors.sidebarBg || '1e293b', type: ShadingType.CLEAR, color: 'auto' },
+            borders: allNoBorders,
+            children: leftChildren.length > 0 ? leftChildren : [new Paragraph({ children: [] })],
+          }),
+          new TableCell({
+            width: { size: rightColPct, type: WidthType.PERCENTAGE },
+            borders: allNoBorders,
+            children: rightChildren.length > 0 ? rightChildren : [new Paragraph({ children: [] })],
+          }),
+        ],
+      })],
+    });
+
+    docxSections = [{ properties: { page: { margin: docxMargins } }, children: [sidebarTable] }];
+
+  } else if (layout === 'header-band') {
+    // ── Header Band: dark band table + body paragraphs ──────────────────────
+    const bandTable = new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [new TableRow({
+        children: [new TableCell({
+          shading: { fill: colors.headerBand || '111827', type: ShadingType.CLEAR, color: 'auto' },
+          borders: allNoBorders,
+          children: [
+            new Paragraph({
+              spacing: { before: 120, after: 60 },
+              children: [new TextRun({ text: name, font: dc.headingFont || dc.font || 'Calibri', bold: true, size: titleSizeDocx, color: 'ffffff' })],
+            }),
+            ...(contact ? [new Paragraph({
+              spacing: { after: 120 },
+              children: [new TextRun({ text: contact, font: dc.font || 'Calibri', size: smallSizeDocx, color: 'D1D5DB' })],
+            })] : []),
+          ],
+        })],
+      })],
+    });
+
+    const bodyChildren = [];
+    buildSectionContent(bodyChildren);
+    docxSections = [{ properties: { page: { margin: docxMargins } }, children: [bandTable, ...bodyChildren] }];
+
+  } else if (layout === 'accent-strip') {
+    // ── Accent Strip: thin color bar (left col) + all content (right col) ───
+    const accentColPct = dc.accentColPct || 3;
+    const contentColPct = 100 - accentColPct;
+
+    const contentChildren = [];
+    // Header
+    contentChildren.push(new Paragraph({
+      spacing: { after: spacing.titleAfter },
+      children: [new TextRun({ text: name, font: dc.headingFont || dc.font || 'Calibri', bold: true, size: titleSizeDocx, color: colors.title || '1f2937' })],
+    }));
+    if (contact) {
+      contentChildren.push(new Paragraph({
+        spacing: { after: spacing.contactAfter },
+        children: [new TextRun({ text: contact, font: dc.font || 'Calibri', size: bodySizeDocx, color: colors.meta || '6b7280' })],
+      }));
+    }
+    buildSectionContent(contentChildren);
+
+    const accentTable = new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [new TableRow({
+        children: [
+          new TableCell({
+            width: { size: accentColPct, type: WidthType.PERCENTAGE },
+            shading: { fill: colors.accentBar || colors.accent || '7c3aed', type: ShadingType.CLEAR, color: 'auto' },
+            borders: allNoBorders,
+            children: [new Paragraph({ children: [] })],
+          }),
+          new TableCell({
+            width: { size: contentColPct, type: WidthType.PERCENTAGE },
+            borders: allNoBorders,
+            children: contentChildren,
+          }),
+        ],
+      })],
+    });
+
+    docxSections = [{ properties: { page: { margin: docxMargins } }, children: [accentTable] }];
+
+  } else {
+    // ── Traditional / Centered / Compact ─────────────────────────────────────
+    const mainChildren = [];
+
+    // Header
+    mainChildren.push(new Paragraph({
+      heading: HeadingLevel.TITLE,
+      spacing: { after: spacing.titleAfter },
+      alignment: titleAlign,
+      children: [new TextRun({ text: name, font: dc.headingFont || dc.font || 'Calibri', bold: true, size: titleSizeDocx, color: colors.title || undefined })],
+    }));
+    if (contact) {
+      mainChildren.push(new Paragraph({
+        spacing: { after: spacing.contactAfter },
+        alignment: titleAlign,
+        children: [new TextRun({ text: contact, font: dc.font || 'Calibri', size: bodySizeDocx, color: colors.meta || undefined })],
+      }));
+    }
+
+    buildSectionContent(mainChildren);
+    docxSections = [{ properties: { page: { margin: docxMargins } }, children: mainChildren }];
   }
 
-  // Summary
-  const summary = tailored?.tailored_summary || parsed.summary;
-  if (summary) {
-    addHeading('Summary');
-    addText(summary, style.docx.bodyAfter);
-  }
+  const doc = new Document({ sections: docxSections });
+  return Packer.toBuffer(doc);
+}
 
-  // Skills
-  const skills = (tailored?.target_skills && tailored.target_skills.length > 0) ? tailored.target_skills : parsed.skills || [];
-  if (skills && skills.length > 0) {
-    addHeading('Skills');
-    addText(Array.isArray(skills) ? skills.join(', ') : skills, style.docx.bodyAfter);
-  }
-
-  // Education first
-  if (parsed.education && Array.isArray(parsed.education) && parsed.education.length > 0) {
-    addHeading('Education');
+// Helper for sidebar right-column content (avoids skills, uses custom section order)
+function buildSectionContentForTarget(
+  targetChildren, parsed, tailored, limitToOnePage, style, spacing,
+  sectionOrder, makeHeadingParagraph, makeSubheadingParagraph, makeTextParagraph,
+  makeSmallTextParagraph, makeBulletParagraph, bodySizeDocx, dc, colors
+) {
+  const renderSummary = () => {
+    const summary = tailored?.tailored_summary || parsed.summary;
+    if (!summary) return;
+    makeHeadingParagraph('Summary', targetChildren);
+    makeTextParagraph(summary, targetChildren);
+  };
+  const renderEducation = () => {
+    if (!parsed.education || !Array.isArray(parsed.education) || parsed.education.length === 0) return;
+    makeHeadingParagraph('Education', targetChildren);
     parsed.education.forEach((edu) => {
       if (!edu || typeof edu !== 'object') return;
       const heading = [edu.degree, edu.field].filter(Boolean).join(' in ');
-      if (heading) {
-        addSubheading(heading);
-      }
-      if (edu.school) {
-        addText(edu.school, 80, 0);
-      }
-      if (edu.dates) {
-        addText(edu.dates, style.docx.bodyAfter, 0);
-      }
+      if (heading) makeSubheadingParagraph(heading, targetChildren);
+      if (edu.school) makeTextParagraph(edu.school, targetChildren, 80);
+      const eduMeta = [edu.dates, edu.gpa ? `GPA: ${edu.gpa}` : null].filter(Boolean).join('  \u00B7  ');
+      if (eduMeta) makeSmallTextParagraph(eduMeta, targetChildren);
     });
-  }
-
-  // Experience
-  const expList = (tailored?.tailored_experience && tailored.tailored_experience.length > 0)
-    ? tailored.tailored_experience
-    : parsed.experience || [];
-  if (Array.isArray(expList) && expList.length > 0) {
-    addHeading('Experience');
-    // Limit to top 3 items if one-page constraint, otherwise show all
+  };
+  const renderExperience = () => {
+    const expList = (tailored?.tailored_experience?.length > 0) ? tailored.tailored_experience : (parsed.experience || []);
+    if (!Array.isArray(expList) || expList.length === 0) return;
+    makeHeadingParagraph('Experience', targetChildren);
     const itemsToShow = limitToOnePage ? expList.slice(0, 3) : expList;
     itemsToShow.forEach((exp) => {
       if (!exp || typeof exp !== 'object') return;
       const title = exp.role || exp.title || '';
       const company = exp.company || '';
       const heading = [title, company].filter(Boolean).join(' at ');
-      if (heading) {
-        addSubheading(heading);
-      }
-      if (exp.dates) {
-        addText(exp.dates, limitToOnePage ? 40 : 80, 0);
-      }
-      if (exp.description) addText(exp.description, limitToOnePage ? 60 : 100, 0);
+      if (heading) makeSubheadingParagraph(heading, targetChildren);
+      if (exp.dates) makeSmallTextParagraph(exp.dates, targetChildren, limitToOnePage ? 40 : 80);
       if (Array.isArray(exp.bullets) && exp.bullets.length > 0) {
-        // Limit to 2 bullets if one-page, otherwise show all
         const bulletsToShow = limitToOnePage ? exp.bullets.slice(0, 2) : exp.bullets;
-        bulletsToShow.forEach((b) => addBullet(b, 0));
+        bulletsToShow.forEach((b) => makeBulletParagraph(b, targetChildren));
+      } else if (exp.description) {
+        makeTextParagraph(exp.description, targetChildren, limitToOnePage ? 60 : 100);
       }
     });
-  }
-
-  // Projects (skip if one-page constraint to save space)
-  if (!limitToOnePage) {
-    const projects = parsed.projects;
-    if (projects) {
-      addHeading('Projects');
-      if (Array.isArray(projects)) {
-        projects.forEach((p) => {
-          if (!p || typeof p !== 'object') return;
-          const heading = [p.name, p.organization].filter(Boolean).join(' — ');
-          if (heading) {
-            addSubheading(heading);
-          }
-          if (p.dates) {
-            addText(p.dates, 80, 0);
-          }
-          if (p.description) addText(p.description, 100, 0);
-          if (Array.isArray(p.technologies) && p.technologies.length > 0) {
-            children.push(new Paragraph({
-              spacing: { after: spacing.bodyAfter },
-              children: [
-                new TextRun({ text: 'Technologies: ', font: style.docx.font || 'Calibri', size: bodySizeDocx, bold: true, color: style.docx.bodyColor || undefined }),
-                new TextRun({ text: p.technologies.join(', '), font: style.docx.font || 'Calibri', size: bodySizeDocx, color: style.docx.bodyColor || undefined })
-              ],
-            }));
-          }
-        });
-      } else if (typeof projects === 'string') {
-        addText(projects, spacing.bodyAfter);
+  };
+  const renderProjects = () => {
+    if (limitToOnePage) return;
+    const projects = (tailored?.tailored_projects?.length > 0) ? tailored.tailored_projects : (parsed.projects || []);
+    if (!Array.isArray(projects) || projects.length === 0) return;
+    makeHeadingParagraph('Projects', targetChildren);
+    projects.forEach((p) => {
+      if (!p || typeof p !== 'object') return;
+      const heading = [p.name, p.organization].filter(Boolean).join(' \u2014 ');
+      if (heading) makeSubheadingParagraph(heading, targetChildren);
+      if (p.dates) makeSmallTextParagraph(p.dates, targetChildren, 80);
+      if (p.description) makeTextParagraph(p.description, targetChildren, 100);
+      if (Array.isArray(p.technologies) && p.technologies.length > 0) {
+        targetChildren.push(new Paragraph({
+          spacing: { after: spacing.bodyAfter },
+          children: [
+            new TextRun({ text: 'Technologies: ', font: dc.font || 'Calibri', size: bodySizeDocx, bold: true, color: colors.body || undefined }),
+            new TextRun({ text: p.technologies.join(', '), font: dc.font || 'Calibri', size: bodySizeDocx, color: colors.body || undefined }),
+          ],
+        }));
       }
-    }
-  }
-
-  const doc = new Document({
-    sections: [{ children }],
-  });
-
-  return Packer.toBuffer(doc);
+    });
+  };
+  const renderCertifications = () => {
+    if (!parsed.certifications || !Array.isArray(parsed.certifications) || parsed.certifications.length === 0) return;
+    makeHeadingParagraph('Certifications', targetChildren);
+    parsed.certifications.forEach((cert) => {
+      const parts = [cert.name, cert.issuer, cert.date].filter(Boolean);
+      if (parts.length > 0) makeTextParagraph(parts.join(' \u2014 '), targetChildren);
+    });
+  };
+  const renderAwards = () => {
+    if (!parsed.awards || !Array.isArray(parsed.awards) || parsed.awards.length === 0) return;
+    makeHeadingParagraph('Awards & Honors', targetChildren);
+    parsed.awards.forEach((award) => {
+      const parts = [award.title, award.issuer, award.date].filter(Boolean);
+      if (parts.length > 0) makeTextParagraph(parts.join(' \u2014 '), targetChildren);
+    });
+  };
+  const renderers2 = { summary: renderSummary, education: renderEducation, experience: renderExperience, projects: renderProjects, certifications: renderCertifications, awards: renderAwards };
+  for (const section of sectionOrder) { if (renderers2[section]) renderers2[section](); }
+  if (!sectionOrder.includes('certifications')) renderCertifications();
+  if (!sectionOrder.includes('awards')) renderAwards();
 }
 
 // Build DOCX cover letter
@@ -1018,7 +1982,7 @@ async function buildCoverDocx(parsed = {}, templateKey = 'classic', cover = {}, 
 }
 
 // Helper: Check and handle subscription expiry
-async function checkAndHandleSubscriptionExpiry(user) {
+async function checkAndHandleSubscriptionExpiry(user, now = getAppNow()) {
   if (!user) return;
 
   const subscription = await Subscription.findOne({
@@ -1028,81 +1992,25 @@ async function checkAndHandleSubscriptionExpiry(user) {
 
   if (!subscription) return;
 
-  const now = new Date();
-  const currentPeriodEnd = new Date(subscription.currentPeriodEnd);
-  const usageMetrics = await UsageMetrics.findOne({ where: { userId: user.id } });
+  const usageMetrics = await UsageMetrics.findOne({ 
+    where: { userId: user.id },
+    order: [['createdAt', 'DESC']],
+  });
 
-  const monthlyBonusRemaining = user.tier === 'monthly' ? (usageMetrics?.bonusGenerations || 0) : 0;
-  const monthlyBonusExpiry = usageMetrics?.bonusExpiresAt ? new Date(usageMetrics.bonusExpiresAt) : null;
-  const monthlyBonusActive = user.tier === 'monthly'
-    ? monthlyBonusRemaining > 0 && monthlyBonusExpiry && monthlyBonusExpiry > now
-    : false;
-
-  // If subscription has expired, handle based on tier
-  if ((currentPeriodEnd < now || (!monthlyBonusActive && user.tier === 'monthly' && subscription.tier === 'one-time')) && (subscription.status === 'active' || subscription.status === 'canceled')) {
-    if (subscription.tier === 'one-time' && user.tier === 'monthly') {
-      // Expire one-time add-on for monthly users
-      subscription.status = 'expired';
-      await subscription.save();
-
-      if (usageMetrics) {
-        const baseLimit = TIER_CONFIG.monthly.generationsLimit || 200;
-        const bonus = usageMetrics.bonusGenerations || 0;
-        usageMetrics.generationsLimit = Math.max(baseLimit, usageMetrics.generationsLimit - bonus);
-        usageMetrics.bonusGenerations = 0;
-        usageMetrics.bonusExpiresAt = null;
-        await usageMetrics.save();
-      }
-
-      console.log(`[Subscription] User ${user.id} one-time add-on expired. Bonus removed.`);
-      return;
+  // For monthly subscriptions, use the new reliable expiry checker
+  if (subscription.tier === 'monthly') {
+    // First, try to advance if it's still active
+    if (subscription.status === 'active') {
+      await advanceMonthlySubscriptionIfNeeded(subscription, usageMetrics, now);
     }
+    // Then check if it's expired (covers both canceled and active cases)
+    await checkAndExpireMonthlyIfNeeded(subscription, usageMetrics, now);
+    return;
+  }
 
-    if (subscription.tier === 'one-time' && user.tier === 'one-time') {
-      const oneTimeRemaining = Math.max(0, (usageMetrics?.generationsLimit || 0) - (usageMetrics?.generationsUsed || 0));
-      if (currentPeriodEnd >= now && oneTimeRemaining > 0) {
-        return;
-      }
-
-      subscription.status = 'expired';
-      await subscription.save();
-
-      user.tier = 'auth-free';
-      await user.save();
-
-      if (usageMetrics) {
-        usageMetrics.generationsUsed = 0;
-        usageMetrics.generationsLimit = TIER_CONFIG['auth-free'].generationsLimit;
-        usageMetrics.currentJobCount = 0;
-        usageMetrics.maxJobCount = TIER_CONFIG['auth-free'].jobsPerSession;
-        usageMetrics.resetDate = now;
-        usageMetrics.bonusGenerations = 0;
-        usageMetrics.bonusExpiresAt = null;
-        await usageMetrics.save();
-      }
-
-      console.log(`[Subscription] User ${user.id} one-time pass expired by usage or time. Downgraded to auth-free.`);
-      return;
-    }
-
-    // Standalone one-time or canceled plan expired -> downgrade to auth-free
-    user.tier = 'auth-free';
-    await user.save();
-
-    // Reset usage metrics to auth-free limits
-    const usageMetrics = await UsageMetrics.findOne({ where: { userId: user.id } });
-    if (usageMetrics) {
-      usageMetrics.generationsUsed = 0;
-      usageMetrics.generationsLimit = TIER_CONFIG['auth-free'].generationsLimit;
-      usageMetrics.currentJobCount = 0;
-      usageMetrics.maxJobCount = TIER_CONFIG['auth-free'].jobsPerSession;
-      usageMetrics.resetDate = now;
-      usageMetrics.bonusGenerations = 0;
-      usageMetrics.bonusExpiresAt = null;
-      await usageMetrics.save();
-    }
-
-    console.log(`[Subscription] User ${user.id} one-time plan expired. Downgraded to auth-free.`);
+  // For one-time subscriptions, delegate to the centralized expiry helper
+  if (subscription.tier === 'one-time') {
+    await checkAndExpireOneTimeIfNeeded(subscription, usageMetrics, user, now);
   }
 }
 
@@ -1111,10 +2019,10 @@ async function applyMonthlyBonus(user, usageMetrics) {
   if (!user || !usageMetrics) return usageMetrics;
   if (user.tier !== 'monthly') return usageMetrics;
 
-  const baseLimit = TIER_CONFIG.monthly.generationsLimit || 200;
+  const baseLimit = TIER_CONFIG.monthly.generationsLimit || 150;
   const bonus = Math.min(50, usageMetrics.bonusGenerations || 0);
   const bonusExpiry = usageMetrics.bonusExpiresAt ? new Date(usageMetrics.bonusExpiresAt) : null;
-  const now = new Date();
+  const now = getAppNow();
 
   if (bonus > 0 && bonusExpiry && bonusExpiry < now) {
     usageMetrics.bonusGenerations = 0;
@@ -1172,7 +2080,7 @@ app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (
       }
 
       // Check and handle subscription expiry
-      await checkAndHandleSubscriptionExpiry(user);
+      await checkAndHandleSubscriptionExpiry(user, getAppNow(req));
 
       await applyMonthlyBonus(user, usageMetrics);
 
@@ -1207,14 +2115,14 @@ app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (
       // Check if monthly reset is needed for auth-free tier
       if (user.tier === 'auth-free' && usageMetrics.resetDate) {
         const lastReset = new Date(usageMetrics.resetDate);
-        const today = new Date();
+        const today = getAppNow(req);
         const monthsDiff = (today.getFullYear() - lastReset.getFullYear()) * 12 + (today.getMonth() - lastReset.getMonth());
         
         if (monthsDiff >= 1) {
           // Reset the counter
           console.log(`[/api/upload] Resetting counter for user ${req.userId} due to monthly reset`);
           usageMetrics.generationsUsed = 0;
-          usageMetrics.resetDate = new Date();
+          usageMetrics.resetDate = getAppNow(req);
           await usageMetrics.save();
         }
       }
@@ -1280,6 +2188,7 @@ app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (
 
     // Parse with Gemini
     const parsedResume = await parseResumeWithGemini(resumeText);
+    console.log('[upload] Gemini parsed — name:', parsedResume?.name || '(empty)', '| email:', parsedResume?.email || '(empty)', '| phone:', parsedResume?.phone || '(empty)');
 
     let tailoredResume = null;
     let coverLetter = null;
@@ -1312,7 +2221,12 @@ app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (
       email: parsedResume?.email || '',
       phone: parsedResume?.phone || '',
       location: parsedResume?.location || '',
+      summary: parsedResume?.summary || parsedResume?.objective || '',
       objective: parsedResume?.objective || parsedResume?.summary || '',
+      // Flatten links object so classicTemplateHtml can read them as top-level fields
+      linkedin: parsedResume?.links?.linkedin || parsedResume?.linkedin || '',
+      github: parsedResume?.links?.github || parsedResume?.github || '',
+      website: parsedResume?.links?.portfolio || parsedResume?.website || '',
       technical_skills: Array.isArray(parsedResume?.skills)
         ? parsedResume.skills.join(', ')
         : (parsedResume?.technical_skills || ''),
@@ -1326,6 +2240,9 @@ app.post('/api/upload', optionalAuthMiddleware, upload.single('resume'), async (
       projects: Array.isArray(parsedResume?.projects)
         ? parsedResume.projects
         : (typeof parsedResume?.projects === 'string' ? parsedResume.projects : ''),
+      certifications: Array.isArray(parsedResume?.certifications) ? parsedResume.certifications : [],
+      awards: Array.isArray(parsedResume?.awards) ? parsedResume.awards : [],
+      languages: Array.isArray(parsedResume?.languages) ? parsedResume.languages : [],
       // Provide an array form as well for components that expect it
       skills: Array.isArray(parsedResume?.skills)
         ? parsedResume.skills
@@ -1432,6 +2349,7 @@ app.post('/api/tailor', optionalAuthMiddleware, async (req, res) => {
     const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
     const generateResume = req.body?.generateResume === 'true' || req.body?.generateResume === true;
     const generateCoverLetter = req.body?.generateCoverLetter === 'true' || req.body?.generateCoverLetter === true;
+    const templateKey = req.body?.templateKey || 'classic';
 
     // Check user tier and usage limits
     let user = null;
@@ -1452,12 +2370,12 @@ app.post('/api/tailor', optionalAuthMiddleware, async (req, res) => {
       }
 
       // Check and handle subscription expiry
-      await checkAndHandleSubscriptionExpiry(user);
+      await checkAndHandleSubscriptionExpiry(user, getAppNow(req));
 
       // Check if monthly reset is needed for auth-free tier
       if (user.tier === 'auth-free' && usageMetrics.resetDate) {
         const lastReset = new Date(usageMetrics.resetDate);
-        const today = new Date();
+        const today = getAppNow(req);
         const monthsDiff = (today.getFullYear() - lastReset.getFullYear()) * 12 + (today.getMonth() - lastReset.getMonth());
         
         console.log(`[/api/tailor] Monthly reset check for user ${req.userId}: lastReset=${lastReset.toISOString()}, today=${today.toISOString()}, monthsDiff=${monthsDiff}, generationsUsed=${usageMetrics.generationsUsed}`);
@@ -1536,7 +2454,7 @@ app.post('/api/tailor', optionalAuthMiddleware, async (req, res) => {
     // Only tailor resume if generateResume flag is true
     if (generateResume) {
       console.log(`[/api/tailor] Starting resume tailoring...`);
-      tailoredResume = await tailorResumeWithGemini(parsed, jobDescription, limitToOnePage);
+      tailoredResume = await tailorResumeWithGemini(parsed, jobDescription, limitToOnePage, templateKey);
       console.log(`[/api/tailor] Resume tailoring complete`);
     } else {
       console.log(`[/api/tailor] Skipping resume tailoring (generateResume=false)`);
@@ -1673,100 +2591,70 @@ app.post('/api/tailor', optionalAuthMiddleware, async (req, res) => {
   }
 });
 
+app.post('/api/export-html', async (req, res) => {
+  try {
+    const { parsed, tailored = null, templateKey = 'classic' } = req.body || {};
+    console.log('[export-html] name:', parsed?.name || '(empty)', '| template:', templateKey);
+
+    if (!parsed || typeof parsed !== 'object') {
+      return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
+    }
+
+    const html = buildHtmlForTemplate(parsed, tailored, templateKey);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  } catch (error) {
+    console.error('Error exporting HTML:', error);
+    res.status(500).json({ success: false, error: 'Failed to generate HTML resume.' });
+  }
+});
+
 app.post('/api/export-pdf', async (req, res) => {
   try {
-    const parsed = req.body?.parsed;
-    const tailored = req.body?.tailored || null;
-    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
+    const { parsed, tailored, html: rawHtml, templateKey = 'classic' } = req.body || {};
 
-    if (!parsed || typeof parsed !== 'object') {
-      return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
+    let html;
+    if (rawHtml && typeof rawHtml === 'string') {
+      // User-edited HTML passed directly — skip server-side rebuild
+      console.log('[export-pdf] using provided raw HTML (edited resume)');
+      html = rawHtml;
+    } else {
+      console.log('[export-pdf] building HTML from data, name:', parsed?.name || '(empty)', '| template:', templateKey);
+      if (!parsed || typeof parsed !== 'object') {
+        return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
+      }
+      html = buildHtmlForTemplate(parsed, tailored || null, templateKey);
     }
 
-    const templateKey = req.body?.templateKey || 'classic';
-    const style = getTemplate(templateKey);
-    const doc = new PDFDocument({ size: 'A4', margin: style.pdf.margin || 50 });
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+    const page = await browser.newPage();
+    
+    // Feed the HTML to the browser
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    
+    // Generate pixel-perfect PDF
+    const pdfBuffer = await page.pdf({
+      format: 'Letter',
+      printBackground: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 }
+    });
+
+    await browser.close();
+
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename="resume.pdf"');
-    doc.pipe(res);
-
-    // Generate DOCX first for consistency, then PDF mirrors it (if needed)
-    buildResumePdf(doc, parsed, tailored, templateKey, limitToOnePage);
-
-    doc.end();
+    res.setHeader('Content-Disposition', 'attachment; filename="Tailored_Resume.pdf"');
+    res.send(Buffer.from(pdfBuffer));
   } catch (error) {
     console.error('Error exporting PDF:', error);
-    res.status(500).json({ success: false, error: 'Failed to generate PDF.' });
-  }
-});
-
-app.post('/api/export-pdf-cover', async (req, res) => {
-  try {
-    const parsed = req.body?.parsed;
-    const cover = req.body?.cover || {};
-    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
-
-    if (!parsed || typeof parsed !== 'object') {
-      return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
-    }
-
-    const templateKey = req.body?.templateKey || 'classic';
-    const style = getTemplate(templateKey);
-    const doc = new PDFDocument({ size: 'A4', margin: style.pdf.margin || 50 });
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename="cover-letter.pdf"');
-    doc.pipe(res);
-
-    buildCoverPdf(doc, parsed, templateKey, cover, limitToOnePage);
-
-    doc.end();
-  } catch (error) {
-    console.error('Error exporting PDF cover:', error);
-    res.status(500).json({ success: false, error: 'Failed to generate PDF cover letter.' });
-  }
-});
-
-app.post('/api/export-docx', async (req, res) => {
-  try {
-    const parsed = req.body?.parsed;
-    const tailored = req.body?.tailored || null;
-    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
-
-    if (!parsed || typeof parsed !== 'object') {
-      return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
-    }
-
-    const templateKey = req.body?.templateKey || 'classic';
-    const buffer = await buildResumeDocx(parsed, tailored, templateKey, limitToOnePage);
-
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    res.setHeader('Content-Disposition', 'attachment; filename="resume.docx"');
-    res.send(buffer);
-  } catch (error) {
-    console.error('Error exporting DOCX:', error);
-    res.status(500).json({ success: false, error: 'Failed to generate DOCX.' });
-  }
-});
-
-app.post('/api/export-docx-cover', async (req, res) => {
-  try {
-    const parsed = req.body?.parsed;
-    const cover = req.body?.cover || {};
-    const limitToOnePage = req.body?.limitToOnePage === 'true' || req.body?.limitToOnePage === true;
-
-    if (!parsed || typeof parsed !== 'object') {
-      return res.status(400).json({ success: false, error: 'Missing parsed resume data.' });
-    }
-
-    const templateKey = req.body?.templateKey || 'classic';
-    const buffer = await buildCoverDocx(parsed, templateKey, cover, limitToOnePage);
-
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    res.setHeader('Content-Disposition', 'attachment; filename="cover-letter.docx"');
-    res.send(buffer);
-  } catch (error) {
-    console.error('Error exporting DOCX cover:', error);
-    res.status(500).json({ success: false, error: 'Failed to generate DOCX cover letter.' });
+    res.status(500).json({ success: false, error: 'Failed to generate PDF resume.' });
   }
 });
 
@@ -1888,11 +2776,20 @@ app.get('/api/usage', optionalAuthMiddleware, async (req, res) => {
         const user = await User.findByPk(req.userId);
         const usageMetrics = await UsageMetrics.findOne({
           where: { userId: req.userId },
+          order: [['createdAt', 'DESC']],
         });
 
         console.log(`[/api/usage] User ${req.userId}: found usageMetrics=${!!usageMetrics}, tier=${user?.tier}`);
 
         if (user && usageMetrics) {
+          await advanceMonthlySubscriptionIfNeeded(
+            await Subscription.findOne({
+              where: { userId: req.userId },
+              order: [['createdAt', 'DESC']],
+            }),
+            usageMetrics,
+            getAppNow(req)
+          );
           await applyMonthlyBonus(user, usageMetrics);
           tier = user.tier;
           limit = usageMetrics.generationsLimit || TIER_CONFIG[tier]?.generationsLimit || 6;
@@ -1910,7 +2807,7 @@ app.get('/api/usage', optionalAuthMiddleware, async (req, res) => {
               // Reset the counter
               console.log(`[/api/usage] Resetting counter for user ${req.userId} due to monthly reset`);
               usageMetrics.generationsUsed = 0;
-              usageMetrics.resetDate = new Date();
+              usageMetrics.resetDate = getAppNow(req);
               await usageMetrics.save();
             }
           }
@@ -1922,7 +2819,7 @@ app.get('/api/usage', optionalAuthMiddleware, async (req, res) => {
           bonusGenerations = usageMetrics.bonusGenerations || 0;
           bonusExpiresAt = usageMetrics.bonusExpiresAt || null;
           if (bonusGenerations > 0 && bonusExpiresAt) {
-            const now = new Date();
+            const now = getAppNow(req);
             const expiry = new Date(bonusExpiresAt);
             const daysLeft = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
             bonusDaysLeft = daysLeft > 0 ? daysLeft : 0;
@@ -2197,6 +3094,50 @@ app.post('/api/dev/reset-statuses', ensureDevOnly, async (req, res) => {
   }
 });
 
+// DEVELOPMENT ONLY: Dump user's usage metrics and subscriptions for debugging
+app.get('/api/dev/user-debug/:userId', ensureDevOnly, async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+    const usageRecords = await UsageMetrics.findAll({
+      where: { userId },
+      order: [['createdAt', 'DESC']],
+    });
+
+    const subscriptions = await Subscription.findAll({
+      where: { userId },
+      order: [['createdAt', 'DESC']],
+    });
+
+    return res.json({
+      usageRecords: usageRecords.map(u => ({
+        id: u.id,
+        generationsUsed: u.generationsUsed,
+        generationsLimit: u.generationsLimit,
+        bonusGenerations: u.bonusGenerations,
+        bonusExpiresAt: u.bonusExpiresAt,
+        currentJobCount: u.currentJobCount,
+        maxJobCount: u.maxJobCount,
+        resetDate: u.resetDate,
+        createdAt: u.createdAt,
+      })),
+      subscriptions: subscriptions.map(s => ({
+        id: s.id,
+        tier: s.tier,
+        status: s.status,
+        currentPeriodStart: s.currentPeriodStart,
+        currentPeriodEnd: s.currentPeriodEnd,
+        stripeSubscriptionId: s.stripeSubscriptionId,
+        createdAt: s.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error('[/api/dev/user-debug] Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch debug info' });
+  }
+});
+
 // DEVELOPMENT ONLY: Seed a user's plan state for testing
 app.post('/api/dev/seed-plan', ensureDevOnly, async (req, res) => {
   try {
@@ -2450,6 +3391,8 @@ app.post('/api/dev/inspect-subscription', ensureDevOnly, async (req, res) => {
 // Start server with database initialization
 async function startServer() {
   try {
+    validateStripeConfiguration();
+
     // Initialize database
     await initializeDatabase();
     console.log('✓ Database initialized');

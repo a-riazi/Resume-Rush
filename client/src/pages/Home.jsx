@@ -7,28 +7,21 @@ import PaywallModal from '../components/PaywallModal'
 import JobLimitModal from '../components/JobLimitModal'
 import WarningBanner from '../components/WarningBanner'
 import { useAuth } from '../context/AuthContext'
+import { getApiBaseUrl } from '../lib/api'
+import { getAppNow, getMonthlyRemaining, getOneTimeRemaining, isSubscriptionExpired, isMonthlyActive } from '../lib/subscription'
 
 // Base API URL comes from environment; falls back to localhost for dev or same-origin for production
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : 'https://api.resumerush.io')
+const API_BASE_URL = getApiBaseUrl()
 
 // Maximum number of job descriptions allowed (configurable for API limits)
 const MAX_JOB_DESCRIPTIONS = 3
 
 const templateOptions = [
-  { key: 'classic', label: 'Classic', accent: '#111', heading: '#111', body: '#222', bg: '#f4f2ec' },
-  { key: 'modern', label: 'Modern Accent', accent: '#0f766e', heading: '#0b4f4a', body: '#1f1b16', bg: '#e8f5f3' },
-  { key: 'minimal', label: 'Minimal', accent: '#dddddd', heading: '#333333', body: '#111111', bg: '#f8f8f8' },
-  { key: 'midnight', label: 'Midnight', accent: '#1f4b99', heading: '#12326f', body: '#0e172a', bg: '#eef2fb' },
-  { key: 'sunrise', label: 'Sunrise', accent: '#f97316', heading: '#9a3412', body: '#4a2b16', bg: '#fff3e6' },
-  { key: 'mint', label: 'Mint', accent: '#2dd4bf', heading: '#115e59', body: '#064e3b', bg: '#e6fffa' },
-  { key: 'sidebar', label: 'Sidebar', accent: '#1e40af', heading: '#1e40af', body: '#1a1a1a', bg: '#dbeafe' },
-  { key: 'executive', label: 'Executive', accent: '#d97706', heading: '#d97706', body: '#1a1a1a', bg: '#fef3c7' },
-  { key: 'clean', label: 'Clean Modern', accent: '#7c3aed', heading: '#7c3aed', body: '#374151', bg: '#f3e8ff' },
-  { key: 'bold', label: 'Bold Impact', accent: '#dc2626', heading: '#dc2626', body: '#1a1a1a', bg: '#fee2e2' },
-  { key: 'creative', label: 'Creative', accent: '#059669', heading: '#059669', body: '#1f2937', bg: '#d1fae5' },
-  { key: 'centered_serif', label: 'Centered Serif', accent: '#374151', heading: '#374151', body: '#1f2937', bg: '#eef2f7' },
-  { key: 'compact_pro', label: 'Compact Professional', accent: '#4b5563', heading: '#1f2937', body: '#111827', bg: '#f6f7f9' },
-  { key: 'left_bar', label: 'Left Bar', accent: '#374151', heading: '#1f2937', body: '#111827', bg: '#eef1f4' },
+  { key: 'classic',  label: 'Classic',  description: 'Serif, ruled sections, zero color. ATS-safe for any role.',                                      accent: '#5c5c5c', heading: '#111111', body: '#1a1a1a', bg: '#f5f5f5' },
+  { key: 'ivy',      label: 'Ivy',      description: 'Centered header, Arial font, Harvard-style layout. Academic & business prestige.',               accent: '#1a3a5c', heading: '#000000', body: '#000000', bg: '#edf0f2' },
+  { key: 'prestige', label: 'Prestige', description: 'ALL-CAPS name, bold ruled sections, clean professional single-column.',                          accent: '#2d3748', heading: '#000000', body: '#000000', bg: '#f7f8fa' },
+  { key: 'dual',     label: 'Dual',     description: 'Two-column sidebar with skills panel on the left. Modern structured layout.',                    accent: '#2b4590', heading: '#2c3e50', body: '#333333', bg: '#eef2ff' },
+  { key: 'apex',     label: 'Apex',     description: 'Executive style with prominent summary box and bold ALL-CAPS section headings.',                 accent: '#6b2d0e', heading: '#000000', body: '#222222', bg: '#fff5f0' },
 ]
 
 const sampleParsed = {
@@ -36,14 +29,14 @@ const sampleParsed = {
   email: 'jordan.lee@example.com',
   phone: '(555) 123-4567',
   location: 'San Francisco, CA',
-  summary: 'Product-focused software engineer with 6+ years building web platforms, leading feature delivery, and collaborating across design, product, and data teams.',
+  summary: 'Product-focused software engineer with 6+ years building scalable web platforms. Experienced leading full-stack feature delivery and collaborating across design, product, and data teams to ship high-impact products.',
   skills: ['JavaScript', 'TypeScript', 'React', 'Node.js', 'GraphQL', 'PostgreSQL', 'AWS', 'Docker'],
   education: [
     {
       school: 'University of Washington',
       degree: 'B.S.',
       field: 'Computer Science',
-      dates: '2014 – 2018',
+      dates: 'Sep 2014 – Jun 2018',
     },
   ],
   experience: [
@@ -51,10 +44,10 @@ const sampleParsed = {
       company: 'Nimbus Labs',
       title: 'Senior Software Engineer',
       role: 'Senior Software Engineer',
-      dates: '2021 – Present',
+      dates: 'Jan 2021 – Present',
       description: 'Lead engineer for growth experiments and self-serve onboarding.',
       bullets: [
-        'Shipped experimentation platform (React/Node/GraphQL) improving activation by 12%.',
+        'Shipped experimentation platform (React/Node/GraphQL) improving user activation by 12%.',
         'Reduced page load by 28% via code-splitting, bundle analysis, and image optimization.',
         'Mentored 4 engineers; established review guidelines that cut PR cycle time by 18%.',
       ],
@@ -63,7 +56,7 @@ const sampleParsed = {
       company: 'Brightside',
       title: 'Software Engineer',
       role: 'Software Engineer',
-      dates: '2018 – 2021',
+      dates: 'Jun 2018 – Dec 2020',
       description: 'Built customer-facing features and internal tooling for support ops.',
       bullets: [
         'Implemented real-time chat tooling using WebSockets, reducing support response SLA by 22%.',
@@ -71,15 +64,75 @@ const sampleParsed = {
       ],
     },
   ],
+  activities: [
+    {
+      org: 'Personal',
+      dates: 'Mar 2024 – Present',
+      description: 'Launch notifications tool aggregating changelogs across services with weekly digest.',
+    },
+  ],
   projects: [
     {
       name: 'Release Radar',
       organization: 'Personal',
-      dates: '2024',
+      dates: 'Mar 2024 – Present',
       description: 'Launch notifications tool aggregating changelogs across services with weekly digest.',
       technologies: ['Next.js', 'Prisma', 'PostgreSQL', 'Tailwind'],
     },
   ],
+  certifications: [],
+  awards: [],
+  languages: [],
+}
+
+const sampleTailored = {
+  tailored_summary: 'Product-focused software engineer with 6+ years building scalable web platforms. Experienced leading full-stack feature delivery and collaborating across design, product, and data teams to ship high-impact products.',
+  skills_grouped: {
+    'Frontend': ['JavaScript', 'TypeScript', 'React'],
+    'Backend': ['Node.js', 'GraphQL', 'PostgreSQL'],
+    'Infrastructure': ['AWS', 'Docker'],
+  },
+  tailored_experience: [
+    {
+      company: 'Nimbus Labs',
+      role: 'Senior Software Engineer',
+      dates: 'Jan 2021 – Present',
+      bullets: [
+        'Shipped experimentation platform (React/Node/GraphQL) improving user activation by 12%.',
+        'Reduced page load by 28% via code-splitting, bundle analysis, and image optimization.',
+        'Mentored 4 engineers; established review guidelines that cut PR cycle time by 18%.',
+      ],
+    },
+    {
+      company: 'Brightside',
+      role: 'Software Engineer',
+      dates: 'Jun 2018 – Dec 2020',
+      bullets: [
+        'Implemented real-time chat tooling using WebSockets, reducing support response SLA by 22%.',
+        'Co-owned design system components; improved accessibility (WCAG AA) across core flows.',
+      ],
+    },
+  ],
+  tailored_activities: [
+    {
+      org: 'Personal',
+      role: '',
+      dates: 'Mar 2024 – Present',
+      bullets: [
+        'Launch notifications tool aggregating changelogs across services with weekly digest.',
+      ],
+    },
+  ],
+  tailored_projects: [
+    {
+      name: 'Release Radar',
+      organization: 'Personal',
+      dates: 'Mar 2024 – Present',
+      description: 'Launch notifications tool aggregating changelogs across services with weekly digest.',
+      technologies: ['Next.js', 'Prisma', 'PostgreSQL', 'Tailwind'],
+    },
+  ],
+  sections: ['summary', 'experience', 'education', 'skills', 'activities'],
 }
 
 const HOME_STATE_KEY = 'resume-rush-home-state'
@@ -104,8 +157,8 @@ function getInitialCheckboxState() {
   return { generateResume: true, generateCoverLetter: true, limitToOnePage: false }
 }
 
-export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) {
-  const { user, isAuthenticated, subscription } = useAuth()
+export default function Home({ darkMode = false }) {
+  const { user, isAuthenticated, subscription, subscriptions } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const [file, setFile] = useState(null)
@@ -116,17 +169,17 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     { id: Date.now(), title: '', description: '', results: { tailored: null, coverLetter: null }, isLoading: false, error: null }
   ])
   const [error, setError] = useState(null)
-  const [activePreviewTab, setActivePreviewTab] = useState('resume')
   const [activeJobId, setActiveJobId] = useState(null)
   const [dragActive, setDragActive] = useState(false)
   const [downloading, setDownloading] = useState(false)
-  const [docxDownloading, setDocxDownloading] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  const [editHtmlBackup, setEditHtmlBackup] = useState(null)
+  const iframeRef = useRef(null)
   const [showOriginal, setShowOriginal] = useState(false)
   const [showJobDescription, setShowJobDescription] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
   const [previewJobId, setPreviewJobId] = useState(null)
-  const [pdfUrl, setPdfUrl] = useState(null)
-  const [coverPdfUrl, setCoverPdfUrl] = useState(null)
+  const [resumeHtml, setResumeHtml] = useState(null)
   const [templateKey, setTemplateKey] = useState('classic')
   const [previewLabel, setPreviewLabel] = useState('')
   const [expandedJobId, setExpandedJobId] = useState(null)
@@ -174,6 +227,25 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     window.addEventListener('openUpgrade', handleOpenUpgrade)
     return () => window.removeEventListener('openUpgrade', handleOpenUpgrade)
   }, [])
+
+  useEffect(() => {
+    window.addEventListener('resetHome', handleReset)
+    return () => window.removeEventListener('resetHome', handleReset)
+  }, [])
+
+  useEffect(() => {
+    if (!editMode || !iframeRef.current) return
+    const iframe = iframeRef.current
+    const enable = () => {
+      try { iframe.contentDocument.designMode = 'on' } catch (e) { console.warn('designMode unavailable:', e) }
+    }
+    if (iframe.contentDocument?.readyState === 'complete') {
+      enable()
+    } else {
+      iframe.addEventListener('load', enable, { once: true })
+      return () => iframe.removeEventListener('load', enable)
+    }
+  }, [editMode])
 
   const handleClosePaywall = () => {
     setShowPaywall(false)
@@ -270,55 +342,39 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
   const originalProjectsArray = Array.isArray(result?.projects) ? result.projects : null
   const originalProjectsText = !originalProjectsArray && typeof result?.projects === 'string' ? result.projects : ''
 
-  // Helper function to get countdown text for one-time pass
-  const getCountdownInfo = () => {
-    if (user?.tier === 'one-time' && subscription?.currentPeriodEnd) {
-      const endDate = new Date(subscription.currentPeriodEnd);
-      const now = new Date();
-      const daysLeft = Math.ceil((endDate - now) / (1000 * 60 * 60 * 24));
-      if (daysLeft > 0) {
-        return ` - ${daysLeft} day${daysLeft !== 1 ? 's' : ''} left`;
-      }
-    }
-    return '';
-  };
+  const monthlySubscription = subscriptions?.monthly || (subscription?.tier === 'monthly' ? subscription : null)
+  const oneTimeSubscription = subscriptions?.oneTime || (subscription?.tier === 'one-time' ? subscription : null)
+  const monthlyRemaining = getMonthlyRemaining(monthlySubscription, usageStats)
+  const oneTimeRemaining = getOneTimeRemaining(oneTimeSubscription, usageStats, monthlySubscription)
 
   // Generate usage display text based on tier
   const getUsageDisplayText = () => {
     try {
-      const safeLimit = Number.isFinite(usageStats?.limit) ? usageStats.limit : 0
-      const safeRemaining = Number.isFinite(usageStats?.remaining) ? usageStats.remaining : 0
-      const bonusGenerations = Number.isFinite(usageStats?.bonusGenerations) ? usageStats.bonusGenerations : 0
-      const rawBonusDaysLeft = usageStats?.bonusDaysLeft ?? null
-      const bonusDaysLeft = rawBonusDaysLeft !== null ? Math.min(5, Math.max(0, rawBonusDaysLeft)) : null
-      const baseRemaining = Number.isFinite(usageStats?.baseRemaining)
-        ? usageStats.baseRemaining
-        : safeRemaining
-      const bonusText = bonusGenerations > 0 && bonusDaysLeft !== null
-        ? ` + ${bonusGenerations} bonus (${bonusDaysLeft} day${bonusDaysLeft !== 1 ? 's' : ''} left)`
-        : ''
+      const monthlyActive = isMonthlyActive(monthlySubscription) && monthlyRemaining > 0
+      const oneTimeEnd = oneTimeSubscription?.currentPeriodEnd ? new Date(oneTimeSubscription.currentPeriodEnd) : null
+      const oneTimeActive = Boolean(oneTimeSubscription && oneTimeEnd && oneTimeEnd > getAppNow() && oneTimeRemaining > 0)
+      const defaultDailyLimit = isAuthenticated ? 6 : 3
 
-      if (user?.tier === 'monthly') {
-        return `${baseRemaining} of ${safeLimit} generations remaining this month${bonusText}`
+      if (oneTimeActive && monthlyActive) {
+        return `${oneTimeRemaining} one-time pass generations left, ${monthlyRemaining} monthly generations left`
       }
-      if (user?.tier === 'one-time') {
-        return `${safeRemaining} of ${safeLimit} generations remaining${getCountdownInfo()}`
+
+      if (oneTimeActive) {
+        return `${oneTimeRemaining} one-time pass generations left`
       }
-      return `${safeRemaining} of ${safeLimit} generations remaining`
+
+      if (monthlyActive) {
+        return `${monthlyRemaining} monthly generations left`
+      }
+
+      return `${defaultDailyLimit} daily generations left`
     } catch (err) {
       console.error('[Home] Failed to render usage text:', err)
       return 'Usage information unavailable'
     }
   };
 
-  const tailoredSummary = jobDescriptions[0]?.results?.tailored?.tailored_summary || jobDescriptions[0]?.results?.tailored?.tailored_objective || ''
-  const tailoredSkillsArray = Array.isArray(jobDescriptions[0]?.results?.tailored?.target_skills)
-    ? jobDescriptions[0].results.tailored.target_skills
-    : (typeof jobDescriptions[0]?.results?.tailored?.tailored_technical_skills === 'string'
-        ? jobDescriptions[0].results.tailored.tailored_technical_skills.split(',').map(s => s.trim()).filter(Boolean)
-        : [])
-  const tailoredExperienceArray = Array.isArray(jobDescriptions[0]?.results?.tailored?.tailored_experience) ? jobDescriptions[0].results.tailored.tailored_experience : null
-  const tailoredExperienceText = !tailoredExperienceArray && typeof jobDescriptions[0]?.results?.tailored?.tailored_experience === 'string' ? jobDescriptions[0].results.tailored.tailored_experience : ''
+  
 
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0]
@@ -376,8 +432,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     setFile(selectedFile)
     setResult(null)
     setShowPreview(false)
-    setPdfUrl(null)
-    setCoverPdfUrl(null)
+    setResumeHtml(null)
     setPreviewJobId(null)
     setActiveJobId(null)
     setShowOriginal(false)
@@ -422,8 +477,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     revokePreviewUrl()
     setFile(null)
     setResult(null)
-    setPdfUrl(null)
-    setCoverPdfUrl(null)
+    setResumeHtml(null)
     setShowPreview(false)
     setShowUploadPreview(false)
     setPreviewJobId(null)
@@ -584,7 +638,8 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
             jobDescription: job.description.trim(),
             generateResume: generateResume,
             generateCoverLetter: generateCoverLetter,
-            limitToOnePage: limitToOnePage
+            limitToOnePage: limitToOnePage,
+            templateKey: templateKey
           }
 
           console.log(`[handleUpload] Sending tailor request for job ${job.id}...`)
@@ -676,14 +731,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
   }
 
   const handleReset = () => {
-    if (pdfUrl) {
-      window.URL.revokeObjectURL(pdfUrl)
-      setPdfUrl(null)
-    }
-    if (coverPdfUrl) {
-      window.URL.revokeObjectURL(coverPdfUrl)
-      setCoverPdfUrl(null)
-    }
+    setResumeHtml(null)
     revokePreviewUrl()
     setFile(null)
     setResult(null)
@@ -693,7 +741,6 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     setShowJobDescription(false)
     setShowPreview(false)
     setTemplateKey('classic')
-    setActivePreviewTab('resume')
     setActiveJobId(null)
     setPreviewJobId(null)
     sessionStorage.removeItem(HOME_STATE_KEY)
@@ -703,32 +750,19 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     if (!result) return
     const activeJob = jobDescriptions.find(j => j.id === jobId)
     if (!activeJob || !activeJob.results.tailored) return
-    
-    // Clear any existing previews first
-    if (pdfUrl) {
-      window.URL.revokeObjectURL(pdfUrl)
-      setPdfUrl(null)
-    }
-    if (coverPdfUrl) {
-      window.URL.revokeObjectURL(coverPdfUrl)
-      setCoverPdfUrl(null)
-    }
-    
+
     setDownloading(true)
     setError(null)
     setPreviewLabel(`${activeJob.title ? activeJob.title : 'Job'} · Resume`)
-    setActivePreviewTab('resume')
     setPreviewJobId(jobId)
-    
-    try {
-      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey, limitToOnePage }
-      const response = await axios.post(`${API_BASE_URL}/api/export-pdf`, payload, {
-        responseType: 'blob',
-      })
 
-      const blob = new Blob([response.data], { type: 'application/pdf' })
-      const url = window.URL.createObjectURL(blob)
-      setPdfUrl(url)
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/api/export-html`,
+        { parsed: result, tailored: activeJob.results.tailored || null, templateKey },
+        { responseType: 'text' }
+      )
+      setResumeHtml(response.data)
       setShowPreview(true)
     } catch (err) {
       console.error('Preview error:', err)
@@ -738,64 +772,21 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     }
   }
 
-  const handlePreviewCover = async (jobId) => {
-    if (!result) return
-    const activeJob = jobDescriptions.find(j => j.id === jobId)
-    if (!activeJob || !activeJob.results.coverLetter) return
-    
-    // Clear any existing previews first
-    if (pdfUrl) {
-      window.URL.revokeObjectURL(pdfUrl)
-      setPdfUrl(null)
-    }
-    if (coverPdfUrl) {
-      window.URL.revokeObjectURL(coverPdfUrl)
-      setCoverPdfUrl(null)
-    }
-    
+
+
+  const handleSamplePreview = async (overrideKey) => {
+    const activeKey = overrideKey || templateKey
+    const activeLabel = templateOptions.find(o => o.key === activeKey)?.label || activeKey
     setDownloading(true)
     setError(null)
-    setPreviewLabel(`${activeJob.title ? activeJob.title : 'Job'} · Cover Letter`)
-    setActivePreviewTab('cover')
-    setPreviewJobId(jobId)
-    
+    setPreviewLabel(`Sample · ${activeLabel}`)
     try {
-      const coverPayload = { 
-        parsed: result, 
-        templateKey,
-        limitToOnePage,
-        cover: {
-          body: activeJob.results.coverLetter,
-        }
-      }
-      const coverResponse = await axios.post(`${API_BASE_URL}/api/export-pdf-cover`, coverPayload, {
-        responseType: 'blob',
-      })
-      const coverBlob = new Blob([coverResponse.data], { type: 'application/pdf' })
-      const coverUrl = window.URL.createObjectURL(coverBlob)
-      setCoverPdfUrl(coverUrl)
-      setShowPreview(true)
-    } catch (err) {
-      console.error('Cover preview error:', err)
-      setError('Failed to generate cover letter preview. Please try again.')
-    } finally {
-      setDownloading(false)
-    }
-  }
-
-  const handleSamplePreview = async (key) => {
-    setDownloading(true)
-    setError(null)
-    setPreviewLabel(`Sample · ${templateOptions.find((t) => t.key === key)?.label || key}`)
-    try {
-      const payload = { parsed: sampleParsed, tailored: null, templateKey: key }
-      const response = await axios.post(`${API_BASE_URL}/api/export-pdf`, payload, {
-        responseType: 'blob',
-      })
-
-      const blob = new Blob([response.data], { type: 'application/pdf' })
-      const url = window.URL.createObjectURL(blob)
-      setPdfUrl(url)
+      const response = await axios.post(
+        `${API_BASE_URL}/api/export-html`,
+        { parsed: sampleParsed, tailored: sampleTailored, templateKey: activeKey },
+        { responseType: 'text' }
+      )
+      setResumeHtml(response.data)
       setShowPreview(true)
     } catch (err) {
       console.error('Sample preview error:', err)
@@ -805,195 +796,89 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
     }
   }
 
-  const handleDownloadFromPreview = () => {
-    // Determine which preview is active and download the correct one
-    const url = activePreviewTab === 'cover' ? coverPdfUrl : pdfUrl
-    if (!url) return
-    
-    const link = document.createElement('a')
-    link.href = url
-    
-    // Get filename from previewJobId if available
-    const activeJob = previewJobId ? jobDescriptions.find(j => j.id === previewJobId) : null
-    const jobTitle = activeJob?.title ? activeJob.title.replace(/\s+/g, '-').toLowerCase() : 'preview'
-    const filename = activePreviewTab === 'cover' 
-      ? `${jobTitle}-cover-letter.pdf` 
-      : `${jobTitle}-resume.pdf`
-    
-    link.setAttribute('download', filename)
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-  }
-
   const handleClosePreview = () => {
-    if (pdfUrl) {
-      window.URL.revokeObjectURL(pdfUrl)
-      setPdfUrl(null)
-    }
-    if (coverPdfUrl) {
-      window.URL.revokeObjectURL(coverPdfUrl)
-      setCoverPdfUrl(null)
-    }
+    setEditMode(false)
+    setEditHtmlBackup(null)
     setShowPreview(false)
   }
 
-  useEffect(() => () => revokePreviewUrl(), [])
-
-  const handleDownloadResumeDocx = async (jobId) => {
-    if (!result) return
-    const activeJob = jobDescriptions.find(j => j.id === jobId)
-    if (!activeJob || !activeJob.results.tailored) return
-    
-    setDocxDownloading(true)
-    setError(null)
-    try {
-      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey, limitToOnePage }
-      const response = await axios.post(`${API_BASE_URL}/api/export-docx`, payload, {
-        responseType: 'blob',
-      })
-
-      const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      const filename = activeJob.title ? `${activeJob.title.replace(/\s+/g, '-').toLowerCase()}-resume.docx` : 'resume.docx'
-      link.setAttribute('download', filename)
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
-    } catch (err) {
-      console.error('DOCX download error:', err)
-      setError('Failed to download resume DOCX. Please try again.')
-    } finally {
-      setDocxDownloading(false)
-    }
+  const handleStartEdit = () => {
+    setEditHtmlBackup(resumeHtml)
+    setEditMode(true)
   }
 
-  const handleDownloadCoverDocx = async (jobId) => {
-    if (!result) return
-    const activeJob = jobDescriptions.find(j => j.id === jobId)
-    if (!activeJob || !activeJob.results.coverLetter) return
-    
-    setDocxDownloading(true)
-    setError(null)
-    try {
-      const coverPayload = { 
-        parsed: result, 
-        templateKey,
-        limitToOnePage,
-        cover: {
-          body: activeJob.results.coverLetter,
-        }
-      }
-      const response = await axios.post(`${API_BASE_URL}/api/export-docx-cover`, coverPayload, {
-        responseType: 'blob',
-      })
-
-      const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      const filename = activeJob.title ? `${activeJob.title.replace(/\s+/g, '-').toLowerCase()}-cover-letter.docx` : 'cover-letter.docx'
-      link.setAttribute('download', filename)
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
-    } catch (err) {
-      console.error('Cover DOCX download error:', err)
-      setError('Failed to download cover letter DOCX. Please try again.')
-    } finally {
-      setDocxDownloading(false)
+  const handleSaveEdits = () => {
+    if (iframeRef.current?.contentDocument) {
+      const updated = '<!DOCTYPE html>\n' + iframeRef.current.contentDocument.documentElement.outerHTML
+      setResumeHtml(updated)
     }
+    setEditMode(false)
+    setEditHtmlBackup(null)
   }
 
-  const handleDownloadResumePdf = async (jobId) => {
-    if (!result) return
-    const activeJob = jobDescriptions.find(j => j.id === jobId)
-    if (!activeJob || !activeJob.results.tailored) return
-    
+  const handleCancelEdit = () => {
+    if (editHtmlBackup) {
+      setResumeHtml(editHtmlBackup)
+      setEditHtmlBackup(null)
+    }
+    setEditMode(false)
+  }
+
+  const handleDownloadPDF = async () => {
+    // If editing, capture live iframe HTML so edits appear in the PDF
+    let rawHtml = null
+    if (editMode && iframeRef.current?.contentDocument) {
+      rawHtml = '<!DOCTYPE html>\n' + iframeRef.current.contentDocument.documentElement.outerHTML
+      setResumeHtml(rawHtml)
+      setEditMode(false)
+      setEditHtmlBackup(null)
+    }
+
+    let targetParsed = result || sampleParsed
+    let targetTailored = null
+    if (previewLabel.includes('Sample')) {
+      targetTailored = sampleTailored
+      targetParsed = sampleParsed
+    } else if (previewJobId && result) {
+      const activeJob = jobDescriptions.find(j => j.id === previewJobId)
+      if (activeJob) targetTailored = activeJob.results.tailored || null
+    }
+
     setDownloading(true)
-    setError(null)
     try {
-      const payload = { parsed: result, tailored: activeJob.results.tailored || null, templateKey, limitToOnePage }
-      const response = await axios.post(`${API_BASE_URL}/api/export-pdf`, payload, {
-        responseType: 'blob',
-      })
-
-      const blob = new Blob([response.data], { type: 'application/pdf' })
-      const url = window.URL.createObjectURL(blob)
+      const payload = rawHtml
+        ? { html: rawHtml }
+        : { parsed: targetParsed, tailored: targetTailored, templateKey }
+      const response = await axios.post(
+        `${API_BASE_URL}/api/export-pdf`,
+        payload,
+        { responseType: 'blob' }
+      )
+      const url = window.URL.createObjectURL(new Blob([response.data]))
       const link = document.createElement('a')
       link.href = url
-      const filename = activeJob.title ? `${activeJob.title.replace(/\s+/g, '-').toLowerCase()}-resume.pdf` : 'resume.pdf'
-      link.setAttribute('download', filename)
+      link.setAttribute('download', 'Tailored_Resume.pdf')
       document.body.appendChild(link)
       link.click()
-      link.remove()
+      link.parentNode.removeChild(link)
       window.URL.revokeObjectURL(url)
     } catch (err) {
       console.error('PDF download error:', err)
-      setError('Failed to download resume PDF. Please try again.')
     } finally {
       setDownloading(false)
     }
   }
 
-  const handleDownloadCoverPdf = async (jobId) => {
-    if (!result) return
-    const activeJob = jobDescriptions.find(j => j.id === jobId)
-    if (!activeJob || !activeJob.results.coverLetter) return
-    
-    setDownloading(true)
-    setError(null)
-    try {
-      const coverPayload = { 
-        parsed: result, 
-        templateKey,
-        limitToOnePage,
-        cover: {
-          body: activeJob.results.coverLetter,
-        }
+  useEffect(() => {
+    return () => {
+      if (uploadPreviewUrl) {
+        window.URL.revokeObjectURL(uploadPreviewUrl)
+        // don't call setUploadPreviewUrl during unmount
       }
-      const response = await axios.post(`${API_BASE_URL}/api/export-pdf-cover`, coverPayload, {
-        responseType: 'blob',
-      })
-
-      const blob = new Blob([response.data], { type: 'application/pdf' })
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      const filename = activeJob.title ? `${activeJob.title.replace(/\s+/g, '-').toLowerCase()}-cover-letter.pdf` : 'cover-letter.pdf'
-      link.setAttribute('download', filename)
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
-    } catch (err) {
-      console.error('Cover PDF download error:', err)
-      setError('Failed to download cover letter PDF. Please try again.')
-    } finally {
-      setDownloading(false)
     }
-  }
+  }, [uploadPreviewUrl])
 
-  const handleDownloadAllPdfs = async (jobId) => {
-    const activeJob = jobDescriptions.find(j => j.id === jobId)
-    if (!activeJob) return
 
-    // Download resume if available
-    if (activeJob.results.tailored) {
-      await handleDownloadResumePdf(jobId)
-      // Small delay to avoid overwhelming the server
-      await new Promise(resolve => setTimeout(resolve, 500))
-    }
-
-    // Download cover letter if available
-    if (activeJob.results.coverLetter) {
-      await handleDownloadCoverPdf(jobId)
-    }
-  }
 
   return (
     <div className={`app ${darkMode ? 'dark-mode' : ''}`}>
@@ -1007,24 +892,22 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
         display: 'flex',
         justifyContent: 'center',
         marginBottom: '12px',
-        opacity: 0.85,
+        opacity: 0.92,
       }}>
         <div style={{
-          backgroundColor: usageStats.remaining === 0 ? 'rgba(220, 38, 38, 0.1)' : 'rgba(59, 130, 246, 0.1)',
-          color: usageStats.remaining === 0 ? '#991b1b' : '#1e40af',
+          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+          color: '#1e40af',
           padding: '6px 14px',
           borderRadius: '20px',
           fontSize: '0.85rem',
           fontWeight: 600,
-          border: `1px solid ${usageStats.remaining === 0 ? 'rgba(220, 38, 38, 0.3)' : 'rgba(59, 130, 246, 0.3)'}`,
+          border: '1px solid rgba(59, 130, 246, 0.3)',
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px',
         }}>
-          <span>{usageStats.remaining === 0 ? '⚠️' : '✨'}</span>
-          <span>
-            {getUsageDisplayText()}
-          </span>
+          <span>✨</span>
+          <span>{getUsageDisplayText()}</span>
         </div>
       </div>
 
@@ -1239,7 +1122,12 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                             }
                             }}
                           >
-                          <div className="template-sample-pill" style={{ background: opt.accent, color: opt.bg }}>{opt.label}</div>
+                          <div className="template-sample-pill" style={{ background: opt.accent, color: '#fff' }}>
+                              {opt.label}
+                            </div>
+                            {opt.description && (
+                              <div className="template-sample-desc">{opt.description}</div>
+                            )}
                             <button
                               className="btn-secondary sample-btn"
                               type="button"
@@ -1267,23 +1155,7 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
             <div className="results-header">
               <h2>{generateResume && generateCoverLetter ? '✓ Tailored Resumes & Cover Letters Ready' : generateCoverLetter ? '✓ Tailored Cover Letters Ready' : '✓ Tailored Resumes Ready'}</h2>
               <div className="results-actions">
-                {jobDescriptions.length < MAX_JOB_DESCRIPTIONS && (
-                  <div className="template-picker">
-                    <label htmlFor="template-select">Template</label>
-                    <select
-                      id="template-select"
-                      value={templateKey}
-                      onChange={(e) => setTemplateKey(e.target.value)}
-                    >
-                      {templateOptions.map((opt) => (
-                        <option key={opt.key} value={opt.key}>{opt.label}</option>
-                      ))}
-                    </select>
-                    {jobDescriptions[0]?.results?.tailored?.recommended_template && (
-                      <span className="recommended-pill">Suggested: {jobDescriptions[0].results.tailored.recommended_template}</span>
-                    )}
-                  </div>
-                )}
+
                 <button onClick={() => setShowJobDescription(!showJobDescription)} className="btn-secondary">
                   {showJobDescription ? 'Hide Job Descriptions' : 'Show Job Descriptions'}
                 </button>
@@ -1343,31 +1215,10 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
                       )}
 
                       <div className="job-action-buttons">
-                        {(job.results.tailored || job.results.coverLetter) && (
-                          <button onClick={() => handleDownloadAllPdfs(job.id)} className="btn-primary" disabled={downloading}>
-                            {downloading && previewJobId === job.id ? 'Downloading...' : 'Download All PDFs'}
-                          </button>
-                        )}
-                        
                         {job.results.tailored && (
-                          <>
-                            <button onClick={() => handlePreviewResume(job.id)} className="btn-secondary btn-preview" disabled={downloading}>
-                              {downloading && previewJobId === job.id ? 'Preparing...' : 'Preview Resume PDF'}
-                            </button>
-                            <button onClick={() => handleDownloadResumeDocx(job.id)} className="btn-secondary btn-docx" disabled={docxDownloading}>
-                              {docxDownloading ? 'Preparing...' : 'Download Resume DOCX'}
-                            </button>
-                          </>
-                        )}
-                        {job.results.coverLetter && (
-                          <>
-                            <button onClick={() => handlePreviewCover(job.id)} className="btn-secondary btn-preview" disabled={downloading}>
-                              {downloading && previewJobId === job.id ? 'Preparing...' : 'Preview Cover Letter PDF'}
-                            </button>
-                            <button onClick={() => handleDownloadCoverDocx(job.id)} className="btn-secondary btn-docx" disabled={docxDownloading}>
-                              {docxDownloading ? 'Preparing...' : 'Download Cover Letter DOCX'}
-                            </button>
-                          </>
+                          <button onClick={() => handlePreviewResume(job.id)} className="btn-secondary btn-preview" disabled={downloading}>
+                            {downloading && previewJobId === job.id ? 'Preparing...' : 'Preview Resume'}
+                          </button>
                         )}
                       </div>
 
@@ -1554,25 +1405,56 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
           </div>
         )}
 
-        {showPreview && (pdfUrl || coverPdfUrl) && (
-          <div className="modal-overlay" onClick={handleClosePreview}>
+        {showPreview && resumeHtml && (
+          <div className="modal-overlay" onClick={editMode ? undefined : handleClosePreview}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
               <div className="modal-header">
-                <h2>{previewLabel || 'Preview'}</h2>
+                <h2>
+                  {previewLabel || 'Resume Preview'}
+                  {editMode && (
+                    <span style={{ fontSize: '0.7em', fontWeight: 'normal', marginLeft: '0.75rem', color: '#92400e', background: '#fef3c7', border: '1px solid #fcd34d', padding: '2px 8px', borderRadius: '4px', verticalAlign: 'middle' }}>
+                      Editing
+                    </span>
+                  )}
+                </h2>
                 <div style={{ display: 'flex', gap: '0.75rem' }}>
-                  <button onClick={handleDownloadFromPreview} className="btn-primary">
-                    Download PDF
-                  </button>
-                  <button onClick={handleClosePreview} className="btn-secondary">
-                    Close
-                  </button>
+                  {editMode ? (
+                    <>
+                      <button onClick={handleSaveEdits} className="btn-primary" disabled={downloading}>
+                        Save Edits
+                      </button>
+                      <button onClick={handleCancelEdit} className="btn-secondary" disabled={downloading}>
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={handleDownloadPDF} className="btn-primary" disabled={downloading}>
+                        {downloading ? 'Preparing PDF...' : 'Download PDF'}
+                      </button>
+                      <button onClick={handleStartEdit} className="btn-secondary" disabled={downloading}>
+                        Edit
+                      </button>
+                      <button onClick={handleClosePreview} className="btn-secondary" disabled={downloading}>
+                        Close
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
+              {editMode && (
+                <div style={{ padding: '6px 16px', background: '#fffbeb', borderBottom: '1px solid #fcd34d', fontSize: '0.8rem', color: '#78350f' }}>
+                  Click any text on the resume to edit it. Press <strong>Save Edits</strong> when done, or <strong>Cancel</strong> to discard changes.
+                </div>
+              )}
               <div className="modal-body">
-                <iframe 
-                  src={activePreviewTab === 'resume' ? pdfUrl : coverPdfUrl} 
-                  title={activePreviewTab === 'resume' ? 'Resume Preview' : 'Cover Letter Preview'} 
-                  className="pdf-preview" 
+                <iframe
+                  ref={iframeRef}
+                  srcDoc={resumeHtml}
+                  title="Resume Preview"
+                  className="pdf-preview"
+                  style={editMode ? { outline: '2px solid #f59e0b', cursor: 'text' } : {}}
+                  sandbox="allow-same-origin"
                 />
               </div>
             </div>
@@ -1589,6 +1471,8 @@ export default function Home({ darkMode = false, onToggleDarkMode = () => {} }) 
             limit={usageStats.limit}
             bonusGenerations={usageStats.bonusGenerations}
             bonusDaysLeft={usageStats.bonusDaysLeft}
+            oneTimeSubscription={subscriptions?.oneTime}
+            monthlySubscription={subscriptions?.monthly}
           />
         )}
 

@@ -9,11 +9,30 @@
   border-bottom: 1px solid #d7e6ff;
 }
 
+.nav-disclaimer {
+  max-width: 1200px;
+  margin: 0.55rem auto 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid #e9d27d;
+  background: #fff8dc;
+  color: #6b4c00;
+  font-size: 0.84rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
 .main-nav.dark {
   background: rgba(15, 17, 26, 0.9);
   backdrop-filter: blur(8px);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   border-color: rgba(255, 123, 220, 0.2);
+}
+
+.main-nav.dark .nav-disclaimer {
+  border-color: rgba(231, 210, 125, 0.45);
+  background: rgba(73, 58, 15, 0.45);
+  color: #ffe9a6;
 }
 
 .nav-container {
@@ -159,6 +178,24 @@
   color: #f4f7ff;
 }
 
+.nav-dev-toggle {
+  border-color: rgba(118, 75, 162, 0.28);
+  background: linear-gradient(135deg, rgba(118, 75, 162, 0.12), rgba(102, 126, 234, 0.12));
+  color: #5b3a88;
+}
+
+.nav-dev-toggle:hover {
+  background: linear-gradient(135deg, rgba(118, 75, 162, 0.18), rgba(102, 126, 234, 0.18));
+  color: #4c1d95;
+}
+
+.nav-dev-toggle.active {
+  border-color: rgba(118, 75, 162, 0.42);
+  background: linear-gradient(135deg, rgba(118, 75, 162, 0.2), rgba(102, 126, 234, 0.2));
+  color: #4c1d95;
+  box-shadow: 0 8px 18px rgba(118, 75, 162, 0.12);
+}
+
 .main-nav.dark .nav-toggle {
   border-color: rgba(255, 123, 220, 0.45);
   background: #0f121c;
@@ -225,5 +262,11 @@
   .nav-upgrade-btn {
     padding: 8px 16px;
     font-size: 13px;
+  }
+
+  .nav-disclaimer {
+    margin: 0.55rem 1rem 0;
+    font-size: 0.78rem;
+    text-align: left;
   }
 }
