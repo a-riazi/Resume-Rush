@@ -81,6 +81,7 @@ export default function BugReport() {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
+        timeout: 20000,
       })
 
       if (response.data?.success) {
@@ -96,7 +97,11 @@ export default function BugReport() {
       }
     } catch (err) {
       console.error('Bug report error:', err)
-      setError(err.response?.data?.error || 'An error occurred while submitting the bug report. Please try again.')
+      if (err.code === 'ECONNABORTED') {
+        setError('Submitting bug report timed out. Please try again in a moment.')
+      } else {
+        setError(err.response?.data?.error || 'An error occurred while submitting the bug report. Please try again.')
+      }
     } finally {
       setLoading(false)
     }

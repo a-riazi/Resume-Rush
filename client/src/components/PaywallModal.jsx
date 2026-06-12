@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import ThemedGoogleButton from './ThemedGoogleButton';
 import { isOneTimeSubscriptionActive, isMonthlyActive } from '../lib/subscription';
 import '../styles/PaywallModal.css';
 
 export default function PaywallModal({ isOpen, onClose, tier, remaining, limit, bonusGenerations, bonusDaysLeft, oneTimeSubscription, monthlySubscription }) {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const { isAuthenticated, loginWithGoogle } = useAuth();
@@ -72,13 +74,13 @@ export default function PaywallModal({ isOpen, onClose, tier, remaining, limit, 
   const handlePlanAction = async (planType) => {
     if (planType === 'monthly' && isMonthlyCurrentlyActive) {
       onClose();
-      window.location.href = '/account/billing';
+      navigate('/account/billing');
       return;
     }
 
     if (planType === 'one-time' && isOneTimeActive) {
       onClose();
-      window.location.href = '/account/billing';
+      navigate('/account/billing');
       return;
     }
 

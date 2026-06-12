@@ -2689,6 +2689,9 @@ app.post('/api/send-bug-report', upload.single('screenshot'), async (req, res) =
     console.log('[Bug Report] Creating email transporter...');
     const transporter = nodemailer.createTransport({
       service: 'gmail',
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
       auth: {
         user: process.env.EMAIL_USER || 'resumerushio@gmail.com',
         pass: process.env.EMAIL_PASSWORD,
@@ -2723,22 +2726,22 @@ app.post('/api/send-bug-report', upload.single('screenshot'), async (req, res) =
 
     // Send email
     console.log('[Bug Report] Sending email...');
-    await transporter.sendMail({
+    const mailOptions = {
       from: process.env.EMAIL_USER || 'resumerushio@gmail.com',
       to: 'resumerushio@gmail.com',
       subject: `Bug Report: ${title}`,
       html: emailHTML,
       attachments: attachments,
-    });
+    };
+
+    await Promise.race([
+      transporter.sendMail(mailOptions),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Bug report email timed out after 20 seconds')), 20000)
+      ),
+    ]);
 
     console.log('[Bug Report] Email sent successfully');
-
-    // Clean up uploaded file after sending
-    if (req.file) {
-      fs.unlink(req.file.path, (err) => {
-        if (err) console.error('Error deleting temp file:', err);
-      });
-    }
 
     res.json({
       success: true,
@@ -2750,6 +2753,13 @@ app.post('/api/send-bug-report', upload.single('screenshot'), async (req, res) =
       success: false,
       error: err.message || 'Failed to send bug report',
     });
+  } finally {
+    // Always clean up uploaded temp file, even on send failures/timeouts.
+    if (req.file?.path) {
+      fs.unlink(req.file.path, (unlinkErr) => {
+        if (unlinkErr) console.error('Error deleting temp file:', unlinkErr);
+      });
+    }
   }
 });
 
@@ -2949,6 +2959,18 @@ app.get('/api/admin/users', optionalAuthMiddleware, ensureAdmin, async (req, res
           stripeSubscriptionId: oneTimeSubscription.stripeSubscriptionId || null,
           currentPeriodEnd: oneTimeSubscription.currentPeriodEnd || null,
           currentPeriodStart: oneTimeSubscription.currentPeriodStart || null,
+          generationsRemaining: (() => {
+            // If already expired by the system or time has passed, return 0 — usageMetrics
+            // may have been reset to auth-free values and would give a false positive count.
+            if (oneTimeSubscription.status === 'expired') return 0;
+            const periodEnd = oneTimeSubscription.currentPeriodEnd ? new Date(oneTimeSubscription.currentPeriodEnd) : null;
+            if (!periodEnd || periodEnd <= new Date()) return 0;
+            if (!usageMetrics) return null;
+            if (user.tier === 'monthly') {
+              return Math.max(0, Math.min(50, usageMetrics.bonusGenerations || 0));
+            }
+            return Math.max(0, (usageMetrics.generationsLimit || 50) - (usageMetrics.generationsUsed || 0));
+          })(),
         } : null,
         hasMonthly: !!monthlySubscription,
         hasOneTime: !!oneTimeSubscription,

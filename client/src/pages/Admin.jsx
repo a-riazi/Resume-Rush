@@ -72,6 +72,15 @@ export default function Admin({ darkMode }) {
     return formatSubscriptionEndLabel(subscription)
   }
 
+  const getOneTimeDisplayStatus = (subscription) => {
+    if (!subscription?.currentPeriodEnd) return 'inactive'
+    // Inactive if the system already marked it expired (gens used up or time ran out)
+    if (subscription.status === 'expired') return 'inactive'
+    // Inactive if time window has passed (covers users who haven't logged in since expiry)
+    if (new Date(subscription.currentPeriodEnd) <= new Date()) return 'inactive'
+    return 'active'
+  }
+
   const getPlanBadgeText = (subscription) => {
     if (!subscription) {
       return 'None'
@@ -82,7 +91,7 @@ export default function Admin({ darkMode }) {
     }
 
     if (subscription.tier === 'one-time') {
-      return `One-Time (${subscription.status})`
+      return `One-Time (${getOneTimeDisplayStatus(subscription)})`
     }
 
     return `${subscription.tier} (${subscription.status})`
@@ -191,7 +200,7 @@ export default function Admin({ darkMode }) {
                       </td>
                       <td>{formatPlanDate(u.monthlySubscription)}</td>
                       <td>
-                        <span className={`badge badge-${u.oneTimeSubscription?.tier || 'free'}`}>
+                        <span className={`badge badge-${u.oneTimeSubscription ? (getOneTimeDisplayStatus(u.oneTimeSubscription) === 'active' ? 'one-time' : 'free') : 'free'}`}>
                           {getPlanBadgeText(u.oneTimeSubscription)}
                         </span>
                       </td>
